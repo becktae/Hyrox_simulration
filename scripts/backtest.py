@@ -18,6 +18,10 @@ from sim.montecarlo import run
 from sim.profile import build_profile
 
 
+# 목표: P10~P90 포함률이 80% ± 5%p (MAE는 참고 지표 — 선수 본인의 경기 간 변동이 커서 ±120s는 비현실적)
+COVERAGE_TARGET, COVERAGE_TOL = 0.80, 0.05
+
+
 def main(per_fold: int, n_sims: int):
     rows = data.load_singles()
     by = defaultdict(list)
@@ -39,8 +43,9 @@ def main(per_fold: int, n_sims: int):
     def show(label, sel):
         e = np.array([x[0] for x in sel])
         cov = np.mean([x[1] for x in sel])
+        ok = "PASS" if abs(cov - COVERAGE_TARGET) <= COVERAGE_TOL else "FAIL"
         print(f"{label:24s} n={len(e):5d} MAE={np.abs(e).mean():4.0f}s bias={e.mean():+5.0f}s "
-              f"within120={(np.abs(e) <= 120).mean():4.0%}  P10-P90 coverage={cov:4.0%}")
+              f"within120={(np.abs(e) <= 120).mean():4.0%}  P10-P90 coverage={cov:4.0%} [{ok}]")
     show("ALL", out)
     show("same condition", [x for x in out if x[2]])
     show("condition changed", [x for x in out if not x[2]])
