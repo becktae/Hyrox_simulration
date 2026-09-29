@@ -57,6 +57,7 @@ def simulate(profile: AthleteProfile, strategy: Strategy, rng: np.random.Generat
     stamina, grip = 1.0, 1.0
     day = rng.lognormal(0.0, profile.day_sd)
     splits, total = {}, 0.0
+    trace = []   # 구간 종료 시점의 (스태미나, 그립) — 게임 UI 게이지용
     for i, seg in enumerate(NAMES):
         t_mult, drain_mult = PACE[strategy.pace_of(seg)] if KIND[seg] == "run" else (1.0, 1.0)
         stamina, grip = _step(stamina, grip, seg, drain_mult)
@@ -66,8 +67,9 @@ def simulate(profile: AthleteProfile, strategy: Strategy, rng: np.random.Generat
         t = profile.base[seg] * t_mult * fatigue * grip_pen * day * rng.lognormal(0.0, profile.cv[seg])
         splits[seg] = t
         total += t
+        trace.append({"stamina": stamina, "grip": grip})
     # Roxzone/전환 시간: 페이스 전략과 무관하게 개인 기준 + 변동 (total_time = 16구간 합 + roxzone)
     rox = profile.base[OVERHEAD] * day * rng.lognormal(0.0, profile.cv[OVERHEAD])
     splits[OVERHEAD] = rox
     total += rox
-    return {"splits": splits, "total": total, "stamina_end": stamina, "grip_end": grip}
+    return {"splits": splits, "total": total, "stamina_end": stamina, "grip_end": grip, "trace": trace}

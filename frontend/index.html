@@ -1,23 +1,160 @@
 <!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Hyrox Simulation</title>
-<style>body{font-family:system-ui;max-width:720px;margin:2rem auto;padding:0 1rem}li{cursor:pointer;margin:.3rem 0}pre{background:#f4f4f4;padding:1rem;overflow:auto}</style></head>
-<body>
-<h1>Hyrox Race Manager</h1>
-<input id="q" placeholder="선수 이름 (예: Tvrdik)"> <button id="go">검색</button>
-<ul id="list"></ul><pre id="out">선수를 검색해 선택하세요.</pre>
+<title>Hyrox Race Manager</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#0f1218;--card:#181d27;--fg:#eef1f6;--mute:#8f9bb0;--line:#2a3242;--a:#5b9dff;--run:#5b9dff;--st:#f59e4b;--good:#3ed598;--bad:#ff6b6b}
+@media (prefers-color-scheme:light){:root{--bg:#f3f5f9;--card:#fff;--fg:#1a2130;--mute:#667085;--line:#dfe3ea;--a:#2563eb;--run:#2563eb;--st:#d9680a;--good:#12915f;--bad:#d92d20}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+.wrap{max-width:860px;margin:auto;padding:16px}
+h1{font-size:22px;margin:8px 0 2px}.sub{color:var(--mute);margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+input,button{font:inherit;color:inherit;border:1px solid var(--line);border-radius:8px;padding:8px 12px;background:var(--bg)}
+button{cursor:pointer}button.pri{background:var(--a);border-color:var(--a);color:#fff;font-weight:600}
+button:disabled{opacity:.45;cursor:default}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row>input{flex:1;min-width:160px}
+#list{list-style:none;margin:10px 0 0;padding:0}#list li{padding:9px 10px;border-radius:8px;cursor:pointer;border:1px solid transparent}#list li:hover{border-color:var(--line);background:var(--bg)}
+.mute{color:var(--mute)}.err{color:var(--bad)}.hide{display:none}
+.hud{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.clock{font-size:44px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1}
+.delta{font-size:18px;font-variant-numeric:tabular-nums}.good{color:var(--good)}.bad{color:var(--bad)}
+.track{display:grid;grid-template-columns:repeat(17,1fr);gap:3px;margin:12px 0}
+.track div{height:10px;border-radius:3px;background:var(--line)}.track .run{background:color-mix(in srgb,var(--run) 35%,var(--line))}.track .st{background:color-mix(in srgb,var(--st) 35%,var(--line))}
+.track .done.run{background:var(--run)}.track .done.st{background:var(--st)}.track .cur{outline:2px solid var(--fg)}
+.gauges{display:grid;grid-template-columns:1fr 1fr;gap:12px}.gauge small{color:var(--mute)}
+.bar{height:12px;background:var(--line);border-radius:6px;overflow:hidden}.bar i{display:block;height:100%;width:100%;transition:width .4s}
+.seg{font-size:26px;font-weight:700;margin:2px 0}.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;color:#fff}
+.tag.run{background:var(--run)}.tag.st{background:var(--st)}
+.paces{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.paces button{text-align:left;padding:10px}.paces b{display:block}.paces small{color:var(--mute)}
+.live{height:14px;background:var(--line);border-radius:7px;overflow:hidden;margin:10px 0 6px}.live i{display:block;height:100%;width:0;background:var(--a)}
+#feed{max-height:220px;overflow:auto;margin:0;padding:0;list-style:none}#feed li{padding:5px 0;border-bottom:1px solid var(--line);display:flex;gap:8px}
+#feed .t{color:var(--mute);font-variant-numeric:tabular-nums;flex:0 0 54px}
+.grade{font-size:72px;font-weight:800;line-height:1}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,th{padding:4px 8px;border-bottom:1px solid var(--line);text-align:right}th:first-child,td:first-child{text-align:left}
+.kpis{display:flex;gap:12px;flex-wrap:wrap}.kpi{flex:1;min-width:120px;border:1px solid var(--line);border-radius:10px;padding:8px 12px}.kpi b{display:block;font-size:22px}
+</style></head>
+<body><div class="wrap">
+<h1>🏁 Hyrox Race Manager</h1><div class="sub">실제 기록으로 만든 개인 모델로 레이스를 직접 운영해 보세요.</div>
+
+<section id="sSelect">
+  <div class="card"><div class="row"><input id="q" placeholder="선수 이름 (예: Tvrdik)"><button id="go" class="pri">검색</button></div>
+    <ul id="list"></ul><div id="msg" class="mute" style="margin-top:8px"></div></div>
+  <div class="card hide" id="cProfile"><div id="who"></div><div style="margin-top:12px"><button id="start" class="pri">레이스 시작</button></div></div>
+</section>
+
+<section id="sRace" class="hide">
+  <div class="card">
+    <div class="hud"><div><div class="mute" id="hName"></div><div class="clock" id="clock">0:00:00</div></div>
+      <div style="text-align:right"><div class="mute">기준 페이스 대비</div><div class="delta" id="delta">±0s</div>
+      <button id="speed" style="margin-top:6px">속도 ×1</button></div></div>
+    <div class="track" id="track"></div>
+    <div class="gauges"><div class="gauge"><small>스태미나</small><div class="bar"><i id="gS" style="background:var(--good)"></i></div></div>
+      <div class="gauge"><small>그립</small><div class="bar"><i id="gG" style="background:var(--st)"></i></div></div></div>
+  </div>
+  <div class="card"><span class="tag" id="segTag"></span><div class="seg" id="segName"></div><div class="mute" id="segHint"></div>
+    <div class="paces hide" id="paces"></div><div class="row" style="margin-top:10px"><button id="go2" class="pri hide"></button></div>
+    <div class="live hide" id="live"><i id="liveBar"></i></div><div class="mute hide" id="liveTxt"></div></div>
+  <div class="card"><div class="mute" style="margin-bottom:6px">중계</div><ul id="feed"></ul></div>
+</section>
+
+<section id="sResult" class="hide">
+  <div class="card"><div class="row" style="align-items:center;gap:20px"><div class="grade" id="grade"></div>
+    <div><div class="mute" id="rName"></div><div class="clock" id="rTotal"></div><div id="rSub" class="mute"></div></div></div></div>
+  <div class="card"><div class="kpis" id="kpis"></div></div>
+  <div class="card"><div class="mute" style="margin-bottom:6px">가상 1,000회 레이스 중 내 위치 (계획 페이스 기준)</div><canvas id="cHist" height="110"></canvas></div>
+  <div class="card"><table id="tbl"></table></div>
+  <div class="row"><button id="again" class="pri">같은 선수로 다시</button><button id="other">다른 선수</button></div>
+</section>
+</div>
 <script>
-const $=id=>document.getElementById(id), fmt=s=>`${Math.floor(s/3600)}:${String(Math.floor(s%3600/60)).padStart(2,"0")}:${String(Math.round(s%60)).padStart(2,"0")}`;
-$("go").onclick=async()=>{
-  const r=await fetch("/api/athletes?q="+encodeURIComponent($("q").value)); const j=await r.json();
-  $("list").innerHTML=""; (j.detail?[]:j).forEach(a=>{const li=document.createElement("li");
-    li.textContent=`${a.name} (${a.nationality}) · ${a.races}경기 · PB ${fmt(a.best)}`;
-    li.onclick=()=>pick(a); $("list").append(li)});
-};
-async function pick(a){
-  const body={name:a.name,nationality:a.nationality,n:1000};
-  const p=await (await fetch(`/api/profile?name=${encodeURIComponent(a.name)}&nationality=${a.nationality}`)).json();
-  const m=await (await fetch("/api/montecarlo",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
-  $("out").textContent=`${a.name}\n기준 기록 ${fmt(p.expected_total)} (반영 경기 ${p.n_races})\n1000회: 평균 ${fmt(m.mean)} / P10 ${fmt(m.p10)} / P90 ${fmt(m.p90)}`;
-}
+const $=id=>document.getElementById(id);
+const fmt=s=>`${Math.floor(s/3600)}:${String(Math.floor(s%3600/60)).padStart(2,"0")}:${String(Math.floor(s%60)).padStart(2,"0")}`;
+const fms=s=>`${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,"0")}`;
+const sg=x=>(x>=0?"+":"−")+Math.abs(Math.round(x))+"s";
+const SEG=[["run1","Run 1","run"],["ski_erg","SkiErg 1000m","st"],["run2","Run 2","run"],["sled_push","Sled Push","st"],["run3","Run 3","run"],["sled_pull","Sled Pull","st"],["run4","Run 4","run"],["burpee","Burpee Broad Jump","st"],["run5","Run 5","run"],["rowing","Rowing 1000m","st"],["run6","Run 6","run"],["farmers","Farmers Carry","st"],["run7","Run 7","run"],["sandbag","Sandbag Lunges","st"],["run8","Run 8","run"],["wall_balls","Wall Balls","st"],["roxzone","Roxzone (전환)","st"]];
+const GRIP=new Set(["sled_pull","farmers","sandbag","wall_balls"]);
+const PACES={conservative:["보수적","시간 +3%, 체력 소모 −25%"],plan:["계획","기준 페이스"],aggressive:["공격적","시간 −3%, 체력 소모 +35%"]};
+let ath,prof,seed,runPace,sim,idx,elapsed,plan,busy,speed=1,charts;
+const api=async(u,b)=>{const r=await fetch(u,b?{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}:{});const j=await r.json();if(!r.ok)throw new Error(j.detail||r.statusText);return j};
+const show=id=>["sSelect","sRace","sResult"].forEach(s=>$(s).classList.toggle("hide",s!==id));
+const simulate=()=>api("/api/simulate",{name:ath.name,nationality:ath.nationality,default_pace:"plan",run_pace:runPace,seed});
+
+$("go").onclick=async()=>{const q=$("q").value.trim();$("msg").className="mute";
+  try{if(q.length<2)throw new Error("검색어는 2자 이상");const j=await api("/api/athletes?q="+encodeURIComponent(q));
+    $("list").innerHTML="";if(!j.length)throw new Error("검색 결과 없음");$("msg").textContent="";
+    j.forEach(a=>{const li=document.createElement("li");li.innerHTML=`<b>${a.name}</b> <span class="mute">(${a.nationality}) · ${a.races}경기 · PB ${fmt(a.best)}</span>`;li.onclick=()=>pick(a);$("list").append(li)})}
+  catch(e){$("msg").textContent=e.message;$("msg").className="err"}};
+$("q").onkeydown=e=>{if(e.key==="Enter")$("go").click()};
+async function pick(a){ath=a;$("list").innerHTML="";$("cProfile").classList.remove("hide");$("who").textContent="프로필 생성 중…";$("start").disabled=true;
+  try{prof=await api(`/api/profile?name=${encodeURIComponent(a.name)}&nationality=${encodeURIComponent(a.nationality)}`)}
+  catch(e){$("who").innerHTML=`<span class="err">${e.message}</span>`;return}
+  const runs=[1,2,3,4,5,6,7,8].map(i=>prof.base["run"+i]).reduce((x,y)=>x+y)/8;
+  $("who").innerHTML=`<b style="font-size:18px">${a.name}</b> <span class="mute">(${a.nationality}) · ${prof.race_type}</span>
+   <div class="kpis" style="margin-top:10px"><div class="kpi"><span class="mute">기준 기록</span><b>${fmt(prof.expected_total)}</b></div>
+   <div class="kpi"><span class="mute">평균 러닝</span><b>${fms(runs)}</b></div><div class="kpi"><span class="mute">반영 경기</span><b>${prof.n_races}</b></div></div>`;
+  $("start").disabled=false}
+$("start").onclick=startRace;$("again").onclick=startRace;$("other").onclick=()=>{show("sSelect")};
+$("speed").onclick=()=>{speed=speed===1?3:speed===3?8:1;$("speed").textContent="속도 ×"+speed};
+
+async function startRace(){seed=Math.floor(Math.random()*1e9);runPace={};idx=0;elapsed=0;plan=0;busy=false;
+  sim=await simulate();$("feed").innerHTML="";$("hName").textContent=ath.name;
+  $("track").innerHTML=SEG.map(([,,k])=>`<div class="${k}"></div>`).join("");
+  show("sRace");feed(0,`스타트! ${ath.name} 선수, 기준 기록은 ${fmt(prof.expected_total)}입니다.`);render()}
+function feed(t,txt){const li=document.createElement("li");li.innerHTML=`<span class="t">${fmt(t)}</span><span>${txt}</span>`;$("feed").prepend(li)}
+function gauges(i){const t=i>0?sim.trace[i-1]:{stamina:1,grip:1};
+  $("gS").style.width=(t.stamina*100)+"%";$("gG").style.width=(t.grip*100)+"%";
+  $("gS").style.background=t.stamina<.35?"var(--bad)":"var(--good)";$("gG").style.background=t.grip<.4?"var(--bad)":"var(--st)"}
+function render(){
+  document.querySelectorAll("#track div").forEach((d,i)=>{d.classList.toggle("done",i<idx);d.classList.toggle("cur",i===idx)});
+  $("clock").textContent=fmt(elapsed);const d=elapsed-plan;$("delta").textContent=sg(d);$("delta").className="delta "+(d<=0?"good":"bad");
+  gauges(Math.min(idx,16));
+  if(idx>=SEG.length)return finish();
+  const [k,name,kind]=SEG[idx];$("segName").textContent=name;$("segTag").textContent=kind==="run"?"RUN":"STATION";$("segTag").className="tag "+kind;
+  $("live").classList.add("hide");$("liveTxt").classList.add("hide");
+  const t=idx>0?sim.trace[idx-1]:{stamina:1,grip:1};
+  $("segHint").textContent=kind==="run"?`예상 ${fms(prof.base[k])} · 페이스를 고르세요.`:k==="roxzone"?"전환·이동 시간이 합산됩니다.":`예상 ${fms(prof.base[k])} · ${GRIP.has(k)?"그립 소모 구간 — 그립 "+Math.round(t.grip*100)+"%":"자동 진행"}`;
+  $("paces").classList.toggle("hide",kind!=="run");$("go2").classList.toggle("hide",kind==="run");
+  if(kind==="run")$("paces").innerHTML=Object.entries(PACES).map(([p,[n,d]])=>`<button data-p="${p}"><b>${n}</b><small>${d}</small></button>`).join("");
+  else{$("go2").textContent=k==="roxzone"?"마무리":"시작";$("go2").disabled=false}
+  document.querySelectorAll("#paces button").forEach(b=>b.onclick=()=>go(b.dataset.p));
+  $("go2").onclick=()=>go(null)}
+async function go(pace){if(busy)return;busy=true;const [k,name,kind]=SEG[idx];
+  document.querySelectorAll("#paces button").forEach(b=>b.disabled=true);$("go2").disabled=true;
+  try{if(pace){runPace[k]=pace;sim=await simulate()}}catch(e){feed(elapsed,`<span class="err">${e.message}</span>`);busy=false;return}
+  const t=sim.splits[k],base=prof.base[k];
+  $("paces").classList.add("hide");$("go2").classList.add("hide");$("live").classList.remove("hide");$("liveTxt").classList.remove("hide");
+  const dur=Math.min(7,Math.max(3,base/40))*1000/speed,t0=performance.now();
+  await new Promise(res=>{const step=now=>{const p=Math.min(1,(now-t0)/dur);$("liveBar").style.width=(p*100)+"%";
+    $("liveTxt").textContent=`${name} · ${fms(t*p)} / 진행 ${(p*100).toFixed(0)}%`;$("clock").textContent=fmt(elapsed+t*p);
+    p<1?requestAnimationFrame(step):res()};requestAnimationFrame(step)});
+  elapsed+=t;plan+=base;const tr=sim.trace[idx];
+  feed(elapsed,`<b>${name}</b> ${fms(t)} (${sg(t-base)}) — ${comment(k,kind,t/base,tr,pace)}`);
+  idx++;busy=false;render()}
+function comment(k,kind,r,tr,pace){
+  if(tr.stamina<.25)return"체력이 바닥났습니다! 보폭이 눈에 띄게 줄어요.";
+  if(GRIP.has(k)&&tr.grip<.3)return"그립이 풀리며 자세가 무너집니다.";
+  if(r<.96)return kind==="run"?"기세가 굉장합니다! 예상보다 훨씬 빠릅니다.":"기록 단축! 깔끔한 운영이었어요.";
+  if(r>1.06)return pace==="aggressive"?"초반 공격의 대가를 치르고 있습니다.":"오늘은 몸이 무겁습니다. 다음 구간에서 만회해야 해요.";
+  if(pace==="aggressive"&&tr.stamina<.6)return"공격적 페이스, 체력 소모가 커지고 있어요.";
+  return"안정적으로 소화했습니다."}
+
+async function finish(){show("sResult");const total=elapsed;
+  $("rName").textContent=ath.name;$("rTotal").textContent=fmt(total);
+  const d=total-prof.expected_total;$("rSub").innerHTML=`기준 ${fmt(prof.expected_total)} 대비 <b class="${d<=0?"good":"bad"}">${sg(d)}</b>`;
+  $("grade").textContent="…";
+  const m=await api("/api/montecarlo",{name:ath.name,nationality:ath.nationality,n:1000,seed:1});
+  const e=m.hist.edges,c=m.hist.counts,N=c.reduce((a,b)=>a+b);let below=0;
+  c.forEach((n,i)=>{if(total>=e[i+1])below+=n;else if(total>e[i])below+=n*(total-e[i])/(e[i+1]-e[i])});
+  const pct=100-below/N*100;   // 상위 %
+  const g=pct<=10?"S":pct<=30?"A":pct<=60?"B":pct<=85?"C":"D";
+  $("grade").textContent=g;$("grade").style.color=g<="A"?"var(--good)":g==="B"?"var(--a)":"var(--bad)";
+  const paced=Object.values(runPace);
+  $("kpis").innerHTML=[["상위",pct.toFixed(0)+"%","가상 레이스 대비"],["P10 / P50 / P90",`${fmt(m.p10)} / ${fmt(m.p50)} / ${fmt(m.p90)}`],["선택","공격 "+paced.filter(x=>x==="aggressive").length+" · 보수 "+paced.filter(x=>x==="conservative").length]]
+   .map(([l,v,s])=>`<div class="kpi"><span class="mute">${l}</span><b style="font-size:${v.length>14?15:22}px">${v}</b><span class="mute">${s||""}</span></div>`).join("");
+  const mid=c.map((_,i)=>(e[i]+e[i+1])/2);
+  if(charts)charts.destroy();
+  charts=new Chart($("cHist"),{type:"bar",data:{labels:mid.map(fmt),datasets:[{data:c,backgroundColor:mid.map((x,i)=>total>=e[i]&&total<e[i+1]?"#ffb020":"#5b9dff88"),categoryPercentage:1,barPercentage:1}]},
+    options:{plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label}}},scales:{x:{ticks:{maxTicksLimit:7}},y:{display:false}}}});
+  $("tbl").innerHTML="<tr><th>구간</th><th>선택</th><th>기록</th><th>기준 대비</th></tr>"+SEG.map(([k,n])=>`<tr><td>${n}</td><td>${runPace[k]?PACES[runPace[k]][0]:"-"}</td><td>${fms(sim.splits[k])}</td><td class="${sim.splits[k]<=prof.base[k]?"good":"bad"}">${sg(sim.splits[k]-prof.base[k])}</td></tr>`).join("")}
 </script></body></html>

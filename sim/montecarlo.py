@@ -15,6 +15,8 @@ def run(profile: AthleteProfile, strategy: Strategy, n: int = 1000, seed: int | 
         "p50": float(np.percentile(totals, 50)),
         "p90": float(np.percentile(totals, 90)),
     }
+    counts, edges = np.histogram(totals, bins=30)
+    out["hist"] = {"counts": counts.tolist(), "edges": [float(e) for e in edges]}
     if target is not None:
         out["p_beat_target"] = float((totals <= target).mean())
     return out
