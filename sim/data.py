@@ -102,4 +102,27 @@ def load_singles(name: str | None = None, nationality: str | None = None) -> lis
             out.append(dict(person=(r["name"], r["nationality"]), race=r["race_id"],
                             season=r["race_id"].split("__")[0], rt=rt, gender=r["gender"],
                             cat=r["category"], x=np.append(v, over), total=r["total_time"]))
-    return out
+    return _drop_near_duplicates(out)
+
+
+NEAR_DUP_SEC = 3
+
+
+def _drop_near_duplicates(rows: list[dict]) -> list[dict]:
+    """같은 사람·종목에서 total_time 차이가 NEAR_DUP_SEC 이하인 기록은 같은 경기의 중복 저장으로 보고 하나만 남긴다.
+
+    같은 이벤트가 heat/목록별 race_id로 따로 저장되고 스플릿이 반올림 차이로 살짝 달라 지문 비교를 빠져나간다.
+    남겨두면 '이전 경기'가 평가 대상 경기의 복사본이 되어 백테스트가 크게 낙관적으로 나온다.
+    """
+    by = {}
+    for r in sorted(rows, key=lambda r: (r["total"], r["race"])):
+        by.setdefault((r["person"], r["rt"]), []).append(r)
+    drop = set()
+    for rs in by.values():
+        last = None
+        for r in rs:
+            if last is not None and r["total"] - last["total"] <= NEAR_DUP_SEC:
+                drop.add(id(r))
+            else:
+                last = r
+    return [r for r in rows if id(r) not in drop]
