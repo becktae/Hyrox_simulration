@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hyrox Simulation</title>
+<style>body{font-family:system-ui;max-width:720px;margin:2rem auto;padding:0 1rem}li{cursor:pointer;margin:.3rem 0}pre{background:#f4f4f4;padding:1rem;overflow:auto}</style></head>
+<body>
+<h1>Hyrox Race Manager</h1>
+<input id="q" placeholder="선수 이름 (예: Tvrdik)"> <button id="go">검색</button>
+<ul id="list"></ul><pre id="out">선수를 검색해 선택하세요.</pre>
+<script>
+const $=id=>document.getElementById(id), fmt=s=>`${Math.floor(s/3600)}:${String(Math.floor(s%3600/60)).padStart(2,"0")}:${String(Math.round(s%60)).padStart(2,"0")}`;
+$("go").onclick=async()=>{
+  const r=await fetch("/api/athletes?q="+encodeURIComponent($("q").value)); const j=await r.json();
+  $("list").innerHTML=""; (j.detail?[]:j).forEach(a=>{const li=document.createElement("li");
+    li.textContent=`${a.name} (${a.nationality}) · ${a.races}경기 · PB ${fmt(a.best)}`;
+    li.onclick=()=>pick(a); $("list").append(li)});
+};
+async function pick(a){
+  const body={name:a.name,nationality:a.nationality,n:1000};
+  const p=await (await fetch(`/api/profile?name=${encodeURIComponent(a.name)}&nationality=${a.nationality}`)).json();
+  const m=await (await fetch("/api/montecarlo",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+  $("out").textContent=`${a.name}\n기준 기록 ${fmt(p.expected_total)} (반영 경기 ${p.n_races})\n1000회: 평균 ${fmt(m.mean)} / P10 ${fmt(m.p10)} / P90 ${fmt(m.p90)}`;
+}
+</script></body></html>
