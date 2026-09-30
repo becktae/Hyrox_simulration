@@ -230,9 +230,12 @@ def build(name: str | None, nationality: str | None, bio: dict | None = None, wo
         name_, nat, adjusted = race.name, race.nationality, race.adjusted
     else:
         base = {s: float(np.exp(v)) for s, v in zip(ALL, m)}
-        day_sd, n_races, season = model.day_sd * 1.2, 0, model.seasons[-1]
+        day_sd, n_races, season = model.day_sd * np.sqrt(2), 0, model.seasons[-1]   # 1경기 선수와 같은 폭
         name_, nat, adjusted = bio.get("name") or "나", "", True
-    cv_eff = np.sqrt(cv**2 + np.diag(P))   # 경기 간 변동 + 남은 수준 불확실성 (WOD 없으면 build_profile의 sqrt(1+1/n)과 동일)
+    # 경기 간 변동 + 남은 수준 불확실성. 불확실성은 1경기짜리 선수(cv²) 이상 넓히지 않는다:
+    # 모집단 편차(0.2~0.3)를 그대로 넣으면 가상 선수의 경기마다 구간이 ±30%씩 튀어 전략 효과(±3%)가 묻힌다.
+    # 경기 기록만 있을 때는 var = cv²/n ≤ cv² 이므로 build_profile의 sqrt(1+1/n)과 동일하다.
+    cv_eff = np.sqrt(cv**2 + np.minimum(np.diag(P), cv**2))
     rating = ratings(g, m)
     traits = {"stamina": rating["stamina"], "grip": rating["grip"]}
     prof = AthleteProfile(name_, nat, gender, rt, season, n_races, base,

@@ -50,6 +50,13 @@ def test_scored_wod_direction_and_weight_required():
     assert skipped
 
 
+def test_wod_only_noise_not_wider_than_one_race_athlete():
+    from sim.model import get_model
+    prof, _ = scout.build(None, None, {"gender": "M", "race_type": "open"}, {"run5k": 1500})
+    limit = np.sqrt(2) * get_model().seg_cv
+    assert all(prof.cv[s] <= l + 1e-9 for s, l in zip(ALL, limit))
+
+
 def test_wod_only_profile_and_wod_effect():
     slow, rep = scout.build(None, None, {"gender": "M", "race_type": "open", "age": 35, "weight_kg": 80}, {"run5k": 1800})
     fast, _ = scout.build(None, None, {"gender": "M", "race_type": "open", "age": 35, "weight_kg": 80}, {"run5k": 1200})

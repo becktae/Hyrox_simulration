@@ -141,10 +141,11 @@ async function analyze(){$("wodMsg").textContent="";$("cProfile").classList.remo
    ${S.age&&r.age_effect_pct!=null?`<div>나이 ${S.age}세 보정: 같은 집단 평균 대비 기록 ${r.age_effect_pct>=0?"+":""}${r.age_effect_pct.toFixed(1)}%</div>`:""}
    ${S.wod.length?`<div>반영한 WOD: ${S.wod.join(" · ")}</div>`:`<div>${prof.n_races?"WOD 없음 — 실제 경기 기록만으로 계산했습니다.":"WOD 기록을 입력하면 더 정확해집니다."}</div>`}
    ${S.skipped.length?`<div class="err">건너뜀: ${S.skipped.join(" · ")}</div>`:""}</div>`;
+  $("start").disabled=false;   // 차트 로딩(CDN) 실패와 무관하게 시작 가능해야 한다
+  if(typeof Chart==="undefined"){$("cRadar").style.display="none";return}
   if(radar)radar.destroy();
   radar=new Chart($("cRadar"),{type:"radar",data:{labels:rs.map(x=>x.label),datasets:[{data:rs.map(x=>x.value),backgroundColor:"#5b9dff44",borderColor:"#5b9dff",pointBackgroundColor:"#5b9dff"}].concat(ro?[{data:rs.map(x=>ro[x.key]),borderColor:"#8f9bb0",borderDash:[4,4],pointRadius:0,backgroundColor:"transparent"}]:[])},
-    options:{plugins:{legend:{display:false}},scales:{r:{min:0,max:100,ticks:{display:false,stepSize:25},pointLabels:{font:{size:11}}}}}});
-  $("start").disabled=false}
+    options:{plugins:{legend:{display:false}},scales:{r:{min:0,max:100,ticks:{display:false,stepSize:25},pointLabels:{font:{size:11}}}}}})}
 $("analyze").onclick=()=>{if(!ath&&!$("b_gender").value){$("wodMsg").textContent="선수를 고르거나 성별을 선택하세요.";$("wodMsg").className="err";return}
   if(!ath)ath={custom:true};analyze()};
 $("startMe").onclick=async()=>{if(!$("b_gender").value){$("wodMsg").textContent="성별을 선택하세요.";$("wodMsg").className="err";return}
@@ -196,7 +197,7 @@ async function go(pace){if(busy)return;busy=true;const [k,name,kind]=SEG[idx];
   await new Promise(res=>{const step=now=>{const p=Math.min(1,(now-t0)/dur);$("liveBar").style.width=(p*100)+"%";
     $("liveTxt").textContent=`${name} · ${fms(t*p)} / 진행 ${(p*100).toFixed(0)}%`;$("clock").textContent=fmt(elapsed+t*p);
     p<1?requestAnimationFrame(step):res()};requestAnimationFrame(step)});
-  elapsed+=t;plan+=base;const tr=sim.trace[idx];
+  elapsed+=t;plan+=base;const tr=sim.trace[Math.min(idx,sim.trace.length-1)];   // roxzone(17번째)은 trace가 없어 마지막 구간 값을 쓴다
   feed(elapsed,`<b>${name}</b> ${fms(t)} (${sg(t-base)}) — ${comment(k,kind,t/base,tr,pace)}${chalkSet.has(k)?" 🧴 초크로 손을 정리했습니다.":""}`);
   idx++;busy=false;render()}
 function comment(k,kind,r,tr,pace){
@@ -222,8 +223,9 @@ async function finish(){show("sResult");const total=elapsed;
   $("kpis").innerHTML=[["상위",pct.toFixed(0)+"%","가상 레이스 대비"],["P10 / P50 / P90",`${fmt(m.p10)} / ${fmt(m.p50)} / ${fmt(m.p90)}`],["선택","공격 "+paced.filter(x=>x==="aggressive"||x==="push").length+" · 보수 "+paced.filter(x=>x==="conservative"||x==="safe").length+" · 초크 "+chalkSet.size]]
    .map(([l,v,s])=>`<div class="kpi"><span class="mute">${l}</span><b style="font-size:${v.length>14?15:22}px">${v}</b><span class="mute">${s||""}</span></div>`).join("");
   const mid=c.map((_,i)=>(e[i]+e[i+1])/2);
-  if(charts)charts.destroy();
+  $("cHist").style.display=typeof Chart==="undefined"?"none":"";
+  if(typeof Chart!=="undefined"){if(charts)charts.destroy();
   charts=new Chart($("cHist"),{type:"bar",data:{labels:mid.map(fmt),datasets:[{data:c,backgroundColor:mid.map((x,i)=>total>=e[i]&&total<e[i+1]?"#ffb020":"#5b9dff88"),categoryPercentage:1,barPercentage:1}]},
-    options:{plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label}}},scales:{x:{ticks:{maxTicksLimit:7}},y:{display:false}}}});
+    options:{plugins:{legend:{display:false},tooltip:{callbacks:{title:i=>i[0].label}}},scales:{x:{ticks:{maxTicksLimit:7}},y:{display:false}}}})}
   $("tbl").innerHTML="<tr><th>구간</th><th>선택</th><th>기록</th><th>기준 대비</th></tr>"+SEG.map(([k,n])=>`<tr><td>${n}</td><td>${runPace[k]?PACES[runPace[k]][0]:stnPace[k]?STN[stnPace[k]][0]:"-"}${chalkSet.has(k)?" 🧴":""}</td><td>${fms(sim.splits[k])}</td><td class="${sim.splits[k]<=prof.base[k]?"good":"bad"}">${sg(sim.splits[k]-prof.base[k])}</td></tr>`).join("")}
 </script></body></html>
