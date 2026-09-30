@@ -3,11 +3,10 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from sim import data, montecarlo
-from sim.engine import Strategy, simulate
-from sim.profile import build_profile
+from sim import data, montecarlo, scout
+from sim.engine import PACE, STATION, Conditions, Strategy, simulate
 
 import numpy as np
 
@@ -16,21 +15,63 @@ FRONT = Path(__file__).resolve().parents[1] / "frontend"
 app.mount("/static", StaticFiles(directory=FRONT), name="static")
 
 
+class CondModel(BaseModel):
+    condition: float = Field(50, ge=0, le=100)
+    stamina: float = Field(100, ge=30, le=100)
+    grip: float = Field(100, ge=30, le=100)
+    temperature: float = Field(18, ge=-10, le=45)
+    humidity: float = Field(50, ge=0, le=100)
+
+
+class BioModel(BaseModel):
+    """신체·종목 정보. 선수를 고르지 않고 내 WOD만으로 시작할 때는 gender/race_type이 필수."""
+    gender: str | None = Field(None, pattern="^[MF]$")
+    race_type: str = Field("open", pattern="^(open|pro)$")
+    age: float | None = Field(None, ge=14, le=80)
+    weight_kg: float | None = Field(None, ge=35, le=180)
+    name: str | None = None
+
+
+class WodModel(BaseModel):
+    run5k: float | None = Field(None, ge=840, le=2700)        # 초
+    row2k: float | None = Field(None, ge=360, le=780)         # 초
+    ski1k: float | None = Field(None, ge=150, le=400)         # 초
+    deadlift: float | None = Field(None, ge=20, le=400)       # kg 1RM
+    backsquat: float | None = Field(None, ge=20, le=350)      # kg 1RM
+    pullups: float | None = Field(None, ge=0, le=60)
+    dead_hang: float | None = Field(None, ge=0, le=300)       # 초
+    fran: float | None = Field(None, ge=100, le=900)          # 초
+    cindy: float | None = Field(None, ge=0, le=40)            # 20분 라운드
+    wallball_2min: float | None = Field(None, ge=0, le=120)
+
+
 class SimRequest(BaseModel):
-    name: str
-    nationality: str
+    name: str = ""            # 비우면 선수 없이 bio + wod 로 만든 가상 선수
+    nationality: str = ""
+    bio: BioModel = BioModel()
+    wod: WodModel = WodModel()
     default_pace: str = "plan"
     run_pace: dict[str, str] = {}
+    station_pace: dict[str, str] = {}
+    chalk: list[str] = []
+    conditions: CondModel = CondModel()
     n: int = 1000
     target: float | None = None
     seed: int | None = None
 
 
-def _profile(name: str, nationality: str):
+def _strategy(req: SimRequest) -> Strategy:
+    if (set(req.run_pace.values()) | {req.default_pace}) - set(PACE) or set(req.station_pace.values()) - set(STATION):
+        raise HTTPException(400, "알 수 없는 전략 값")
+    return Strategy(req.default_pace, req.run_pace, req.station_pace, set(req.chalk))
+
+
+def _scout(req: SimRequest):
     try:
-        return build_profile(name, nationality)
+        return scout.build(req.name or None, req.nationality or None, req.bio.model_dump(),
+                           req.wod.model_dump(exclude_none=True))
     except ValueError as e:
-        raise HTTPException(404, str(e))
+        raise HTTPException(404 if req.name else 400, str(e))
 
 
 @app.get("/")
@@ -47,19 +88,26 @@ def athletes(q: str, limit: int = 20):
 
 @app.get("/api/profile")
 def profile(name: str, nationality: str):
-    p = _profile(name, nationality)
+    p, _ = _scout(SimRequest(name=name, nationality=nationality))
     return {**p.__dict__, "expected_total": p.expected_total}
+
+
+@app.post("/api/scout")
+def scout_report(req: SimRequest):
+    """능력치 리포트 + 합쳐진 프로필(기준 기록). 선수 선택 여부와 WOD 입력 여부에 상관없이 호출 가능."""
+    p, rep = _scout(req)
+    return {**rep, "profile": {**p.__dict__, "expected_total": p.expected_total}}
 
 
 @app.post("/api/simulate")
 def simulate_once(req: SimRequest):
-    p = _profile(req.name, req.nationality)
+    p, _ = _scout(req)
     rng = np.random.default_rng(req.seed)
-    return simulate(p, Strategy(req.default_pace, req.run_pace), rng)
+    return simulate(p, _strategy(req), rng, Conditions(**req.conditions.model_dump()))
 
 
 @app.post("/api/montecarlo")
 def monte(req: SimRequest):
-    p = _profile(req.name, req.nationality)
-    return montecarlo.run(p, Strategy(req.default_pace, req.run_pace),
-                          n=min(req.n, 5000), seed=req.seed, target=req.target)
+    p, _ = _scout(req)
+    return montecarlo.run(p, _strategy(req), n=min(req.n, 5000), seed=req.seed, target=req.target,
+                          cond=Conditions(**req.conditions.model_dump()))
