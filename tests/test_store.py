@@ -25,3 +25,10 @@ def test_save_overwrite_delete(store):
     assert len(store.list_all()) == 2
     assert store.delete(b["id"]) and not store.delete(b["id"])
     assert [p["label"] for p in store.list_all()] == ["a2"]
+
+
+def test_update_keeps_other_fields_and_time(store):
+    a = store.save({"label": "a", "memo": "", "snapshot": {"x": 1}})
+    b = store.update(a["id"], {"memo": "m"})
+    assert b["memo"] == "m" and b["label"] == "a" and b["snapshot"] == {"x": 1} and b["updated"] == a["updated"]
+    assert store.update("nope", {"memo": "x"}) is None

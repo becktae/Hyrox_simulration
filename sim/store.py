@@ -51,6 +51,18 @@ def save(item: dict, profile_id: str | None = None) -> dict:
     return rec
 
 
+def update(profile_id: str, fields: dict) -> dict | None:
+    """일부 필드만 바꾼다 (updated 시각은 유지). 없으면 None."""
+    with _LOCK:
+        items = _read()
+        rec = next((p for p in items if p["id"] == profile_id), None)
+        if rec is None:
+            return None
+        rec.update(fields)
+        _write(items)
+    return rec
+
+
 def delete(profile_id: str) -> bool:
     with _LOCK:
         items = _read()

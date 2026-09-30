@@ -19,7 +19,7 @@ from .config import CACHE_DIR
 from .segments import ALL
 
 N = len(ALL)
-MODEL_VERSION = 2   # 모델 구조가 바뀌면 올린다 → 오래된 캐시는 자동 재적합
+MODEL_VERSION = 3   # 모델 구조가 바뀌면 올린다 → 오래된 캐시는 자동 재적합
 K_MAX = 3   # 경험 단계: 1번째, 2번째, 3번째 이상
 Cond = tuple[str, str, str]  # (season, race_type, gender)
 
@@ -28,13 +28,32 @@ def cond_of(r: dict) -> Cond:
     return (r["season"], r["rt"], r["gender"])
 
 
+def one_factor(C: np.ndarray, var: np.ndarray, iters: int = 200) -> tuple[np.ndarray, np.ndarray]:
+    """잔차 공분산 C → 1요인 모형 C ≈ λλᵀ + diag(ψ) (주축 요인법).
+
+    λ[c] = 그날 컨디션이 구간 c에 미치는 정도, ψ[c] = 구간 고유 변동.
+    '모든 구간에 같은 컨디션 효과(λ=1)'를 가정하면 실제로 일정한 SkiErg·로잉(잔차 sd 4%)의 고유 변동이
+    0으로 눌리고(cv=0.001) 컨디션 영향이 큰 스테이션은 과소평가된다."""
+    psi = 0.5 * var
+    for _ in range(iters):
+        w, V = np.linalg.eigh(C - np.diag(psi))
+        lam = V[:, -1] * np.sqrt(max(w[-1], 1e-12))
+        lam = lam * (1 if lam.sum() >= 0 else -1)
+        new = np.maximum(var - lam**2, 1e-5)
+        if np.allclose(new, psi, atol=1e-10):
+            break
+        psi = new
+    return np.maximum(lam, 1e-3), psi
+
+
 @dataclass
 class ConditionModel:
     beta: dict[Cond, np.ndarray]
     gamma: np.ndarray    # (K_MAX, N) 경험 효과, gamma[0]=0 기준
-    seg_cv: np.ndarray   # 구간별 경기 간 변동(로그 표준편차, day 제외)
-    day_sd: float        # 전 구간 공통 '그날 컨디션' 로그 표준편차
+    seg_cv: np.ndarray   # 구간별 경기 간 고유 변동(로그 표준편차, 그날 컨디션 요인 제외)
+    day_sd: float        # '그날 컨디션' 요인의 로그 표준편차 (구간 적재량 평균 기준 척도)
     seasons: list[str]
+    loads: np.ndarray | None = None   # 구간별 컨디션 요인 적재량(평균 1). 스키·로잉은 작고 파머스·월볼은 큼
 
     @classmethod
     def fit(cls, rows: list[dict], iters: int = 20, min_rows: int = 30) -> "ConditionModel":
@@ -71,16 +90,18 @@ class ConditionModel:
             res.append((z - z.mean(0)) * np.sqrt(len(Y) / (len(Y) - 1)))
         R = np.vstack(res)
         var_s = R.var(0)
-        day_var = max(R.mean(1).var() - var_s.mean() / N, 1e-6)
-        seg_cv = np.sqrt(np.maximum(var_s - day_var, 1e-6))
+        lam, psi = one_factor(np.cov(R.T, bias=True), var_s)
+        day_sd, loads = float(lam.mean()), lam / lam.mean()
+        seg_cv = np.sqrt(psi)
         keep = {c: beta[i] for c, i in cid.items() if cnt[i] >= min_rows}
         seasons = sorted({c[0] for c in keep})
-        return cls(keep, gamma, seg_cv, float(np.sqrt(day_var)), seasons)
+        return cls(keep, gamma, seg_cv, day_sd, seasons, loads)
 
     def to_json(self) -> str:
         return json.dumps({"version": MODEL_VERSION, "beta": {"|".join(k): v.tolist() for k, v in self.beta.items()},
                            "gamma": self.gamma.tolist(),
-                           "seg_cv": self.seg_cv.tolist(), "day_sd": self.day_sd, "seasons": self.seasons})
+                           "seg_cv": self.seg_cv.tolist(), "day_sd": self.day_sd, "seasons": self.seasons,
+                           "loads": self.loads.tolist()})
 
     @classmethod
     def from_json(cls, s: str) -> "ConditionModel":
@@ -88,7 +109,7 @@ class ConditionModel:
         if d.get("version") != MODEL_VERSION:
             raise ValueError("stale model cache")
         return cls({tuple(k.split("|")): np.array(v) for k, v in d["beta"].items()},
-                   np.array(d["gamma"]), np.array(d["seg_cv"]), d["day_sd"], d["seasons"])
+                   np.array(d["gamma"]), np.array(d["seg_cv"]), d["day_sd"], d["seasons"], np.array(d["loads"]))
 
 
 _MODEL: ConditionModel | None = None

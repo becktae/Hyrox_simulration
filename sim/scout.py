@@ -322,7 +322,8 @@ def build(name: str | None, nationality: str | None, bio: dict | None = None, wo
     rating = ratings(g, m)
     traits = {"stamina": rating["stamina"], "grip": rating["grip"]}
     prof = AthleteProfile(name_, nat, gender, rt, season, n_races, base,
-                          {s: float(v) for s, v in zip(ALL, cv_eff)}, float(day_sd), adjusted, traits=traits)
+                          {s: float(v) for s, v in zip(ALL, cv_eff)}, float(day_sd), adjusted,
+                          day_load=dict(zip(ALL, model.loads)), traits=traits)
     exp = explain(base, rating, bio.get("weight_kg"))
     rep = {
         "ratings": [{"key": k, "label": ATTRS.get(k, "종합"), "value": rating[k], "grade": grade_of(rating[k]), **exp[k]} for k in [*ATTRS, "overall"]],
