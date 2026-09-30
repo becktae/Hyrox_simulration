@@ -31,7 +31,9 @@ button:disabled{opacity:.45;cursor:default}
 .sv{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}.sv .gb{font-size:18px;min-width:34px;line-height:32px;border-radius:8px}.sv>div{flex:1;min-width:0}.sv button{padding:5px 10px}
 summary{cursor:pointer}.cond input:not([type=range]),.cond select{width:100%}
 .scout{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr);gap:14px;margin-top:14px;align-items:center}@media(max-width:600px){.scout{grid-template-columns:1fr}}
-.scout:empty{display:none}.attr{display:grid;grid-template-columns:110px 1fr 70px 40px;gap:8px;align-items:center;font-size:14px;padding:2px 0}
+.scout:empty{display:none}.attr.ag{grid-template-columns:120px 1fr 66px 66px 36px}.attr.hdr{color:var(--mute);font-size:12px}.attr.hdr b{font-weight:600}
+.scout>*{min-width:0}.rad{position:relative;max-width:420px;width:100%;margin:auto}
+.attr{display:grid;grid-template-columns:120px 1fr 70px 40px;gap:8px;align-items:center;font-size:14px;padding:2px 0}
 .attr .bar{height:8px}.attr b{text-align:right}.attr small{color:var(--mute);text-align:right}.notes{grid-column:1/-1;font-size:13px}.notes div{margin-top:3px}.gauge small{color:var(--mute)}
 .bar{height:12px;background:var(--line);border-radius:6px;overflow:hidden}.bar i{display:block;height:100%;width:100%;transition:width .4s}
 .seg{font-size:26px;font-weight:700;margin:2px 0}.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;color:#fff}
@@ -134,7 +136,7 @@ const show=id=>{["sSelect","sRace","sResult","sRoster"].forEach(s=>$(s).classLis
 const simulate=()=>api("/api/simulate",{...base(),default_pace:"plan",run_pace:runPace,station_pace:stnPace,chalk:[...chalkSet],conditions:cond,seed});
 
 // ---- 내 정보 · WOD ----
-const BIO=[["gender","성별(선수 없이 시작할 때)","sel",[["","선택"],["M","남"],["F","여"]]],["race_type","종목","sel",[["open","Open"],["pro","Pro"]]],["age","나이","n","32"],["weight_kg","체중(kg)","n","75"]];
+const BIO=[["gender","성별(선수 없이 시작할 때)","sel",[["","선택"],["M","남"],["F","여"]]],["race_type","종목","sel",[["open","Open"],["pro","Pro"]]],["age","나이","n","32"],["age_group","연령대 (선택)","sel",[["","자동 (나이·경기 기록 기준)"],...["16-24","25-29","30-34","35-39","40-44","45-49","50-54","55-59","60-64"].map(b=>[b,b])]],["weight_kg","체중(kg)","n","75"]];
 const WOD=[["run5k","5K 러닝","t","25:00"],["row2k","2K 로우","t","7:30"],["ski1k","1K 스키에르그","t","4:00"],["deadlift","데드리프트 1RM(kg)","n","140"],["backsquat","백스쿼트 1RM(kg)","n","110"],["pullups","스트릭트 풀업(개)","n","8"],["dead_hang","데드행(초)","n","60"],["fran","Fran","t","5:00"],["cindy","Cindy(20분 라운드)","n","15"],["wallball_2min","2분 월볼(개)","n","50"]];
 const fld=(p,[k,n,t,x])=>`<div class="cond"><label><span>${n}</span></label>${t==="sel"?`<select id="${p}_${k}">${x.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>`:`<input id="${p}_${k}" placeholder="${x}" inputmode="${t==="t"?"text":"decimal"}">`}</div>`;
 $("bioForm").innerHTML=BIO.map(f=>fld("b",f)).join("");$("wodForm").innerHTML=WOD.map(f=>fld("w",f)).join("");
@@ -147,6 +149,7 @@ const badFields=()=>[...BIO.filter(f=>f[2]==="n").map(f=>["b",f]),...WOD.map(f=>
   .map(([,[,n,t]])=>`${n}: ${t==="t"?"분:초(예 25:00)로":"숫자로"} 입력하세요`);
 function base(){const bio={race_type:$("b_race_type").value},wod={};
   if($("b_gender").value)bio.gender=$("b_gender").value;
+  if($("b_age_group").value)bio.age_group=$("b_age_group").value;
   ["age","weight_kg"].forEach(k=>{const v=num("b_"+k);if(v!=null&&!isNaN(v))bio[k]=v});
   WOD.forEach(([k,,t])=>{const v=num("w_"+k,t);if(v!=null&&!isNaN(v))wod[k]=v});
   return {name:ath&&!ath.custom?ath.name:"",nationality:ath&&!ath.custom?ath.nationality:"",bio,wod}}
@@ -172,7 +175,7 @@ function renderRoster(){const q=$("rFilter").value.trim().toLowerCase(),so=$("rS
   list.sort(so==="grade"?(a,b)=>b.snapshot.overall-a.snapshot.overall:so==="time"?(a,b)=>a.snapshot.expected_total-b.snapshot.expected_total:so==="name"?(a,b)=>a.label.localeCompare(b.label,"ko"):(a,b)=>b.created.localeCompare(a.created));
   $("rMsg").textContent=roster.length?`${list.length}명`:"등록된 선수가 없습니다. '+ 새 선수 등록'으로 추가하세요.";
   $("rosterList").innerHTML=list.map(p=>{const s=p.snapshot,rs=Object.entries(s.ratings).filter(([k])=>k!=="overall");
-    return `<div class="sv" data-id="${p.id}">${gb(s.grade)}<div><b>${esc(p.label)}</b> <span class="mute">${p.name?esc(p.name)+" 기록 기반":"가상 선수"} · ${s.gender==="M"?"남":"여"} ${s.race_type} · 기준 ${fmt(s.expected_total)} · 종합 ${s.overall}</span>
+    return `<div class="sv" data-id="${p.id}">${gb(s.grade)}<div><b>${esc(p.label)}</b> <span class="mute">${p.name?esc(p.name)+" 기록 기반":"가상 선수"} · ${s.gender==="M"?"남":"여"} ${s.race_type} · 기준 ${fmt(s.expected_total)} · 종합 ${s.overall}${s.age_group&&s.ratings.overall.age_grade?` · ${s.age_group.label} 연령대 ${gb(s.ratings.overall.age_grade)}`:""}</span>
       ${p.memo?`<div class="memo mute">${esc(p.memo)}</div>`:""}
       <div class="chips">${rs.map(([k,r])=>`<span>${r.label} ${gb(r.grade)}</span>`).join("")}</div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><button class="rc pri">레이스</button><button class="ed">편집</button><button class="nm">이름·메모</button>${(p.history||[]).length?`<button class="hs">이전 버전 ${p.history.length}</button>`:""}<button class="dl">삭제</button></div></div>`}).join("");
@@ -189,12 +192,12 @@ function renderRoster(){const q=$("rFilter").value.trim().toLowerCase(),so=$("rS
 $("rFilter").oninput=renderRoster;$("rSort").onchange=renderRoster;
 $("tRoster").onclick=()=>show("sRoster");$("tRace").onclick=()=>show("sSelect");
 $("rNew").onclick=()=>{ath=null;curId=null;prof=null;$("q").value="";$("list").innerHTML="";$("saveLabel").value="";$("saveMemo").value="";$("saveMsg").textContent="";
-  ["b_gender","b_age","b_weight_kg",...WOD.map(([k])=>"w_"+k)].forEach(id=>$(id).value="");$("b_race_type").value="open";
+  ["b_gender","b_age","b_age_group","b_weight_kg",...WOD.map(([k])=>"w_"+k)].forEach(id=>$(id).value="");$("b_race_type").value="open";
   $("cProfile").classList.add("hide");$("regBanner").classList.remove("hide");$("dWod").open=true;show("sSelect");$("q").focus()};
 $("rRefresh").onclick=async()=>{$("rMsg").textContent="다시 계산 중…";try{const r=await api("/api/profiles/refresh",{});await loadRoster();$("rMsg").textContent=`${r.refreshed}명 다시 계산했습니다`}catch(e){$("rMsg").textContent="다시 계산 실패"}};
 async function applySaved(p){show("sSelect");$("regBanner").classList.add("hide");
   $("b_gender").value=p.bio.gender||"";$("b_race_type").value=p.bio.race_type||"open";
-  $("b_age").value=p.bio.age??"";$("b_weight_kg").value=p.bio.weight_kg??"";
+  $("b_age").value=p.bio.age??"";$("b_age_group").value=p.bio.age_group||"";$("b_weight_kg").value=p.bio.weight_kg??"";
   WOD.forEach(([k,,t])=>$("w_"+k).value=p.wod[k]!=null?fmtIn(t,p.wod[k]):"");
   if(p.wod&&Object.keys(p.wod).length)$("dWod").open=true;
   ath=p.name?{name:p.name,nationality:p.nationality}:{custom:true};curId=p.id;$("saveLabel").value=p.label;$("saveMemo").value=p.memo||"";await analyze()}
@@ -217,9 +220,11 @@ async function analyze(){$("wodMsg").textContent="";$("cProfile").classList.remo
   $("saveRow").classList.remove("hide");$("saveOver").classList.toggle("hide",!curId);
   if(!$("saveLabel").value)$("saveLabel").value=ath&&!ath.custom?prof.name:"내 프로필";
   const rs=r.ratings.filter(x=>x.key!=="overall"),ro=r.race_only_ratings,S=r.sources;
-  $("scout").innerHTML=`<canvas id="cRadar" height="230"></canvas><div>${rs.map(x=>{const d=ro?x.value-ro[x.key]:0;return `<div class="attr"><span>${x.label}</span><div class="bar"><i style="width:${x.value}%;background:${x.value>=70?"var(--good)":x.value>=40?"var(--a)":"var(--bad)"}"></i></div><b>${x.value} ${gb(x.grade)}</b><small>${ro&&d?(d>0?"+":"")+d:""}</small></div>`}).join("")}</div>
+  const AG=r.age_group,ov=r.ratings.find(x=>x.key==="overall");
+  const row=x=>{const d=ro?x.value-ro[x.key]:0;return `<div class="attr${AG?" ag":""}"><span>${x.label}${x.general?`<br><small style="text-align:left" title="5K 환산 ${fms(x.general.five_k)} · VDOT ${x.general.vdot} 기준. 전체 점수는 HYROX 참가자와 비교한 값">일반 러너 ${gb(x.general.grade)}</small>`:""}</span><div class="bar"><i style="width:${x.value}%;background:${x.value>=70?"var(--good)":x.value>=40?"var(--a)":"var(--bad)"}"></i></div><b>${x.value} ${gb(x.grade)}</b>${AG?`<b>${x.age_value} ${gb(x.age_grade)}</b>`:""}<small>${ro&&d?(d>0?"+":"")+d:""}</small></div>`};
+  $("scout").innerHTML=`<div class="rad"><canvas id="cRadar" height="230"></canvas></div><div>${AG?`<div class="attr ag hdr"><span></span><span></span><b>전체</b><b>${AG.label}</b><small></small></div>`:""}${rs.map(row).join("")}${AG?`<div class="attr ag" style="border-top:1px solid var(--line);margin-top:4px;padding-top:6px"><span><b>종합</b></span><span></span><b>${ov.value} ${gb(ov.grade)}</b><b>${ov.age_value} ${gb(ov.age_grade)}</b><small></small></div>`:""}</div>
    <div class="notes"><details open><summary><b>능력치는 이렇게 계산됩니다</b></summary>
-     <div class="mute" style="margin:6px 0">점수 = 실제 경기 기록(와 WOD)으로 추정한 내 구간 시간이 같은 성별·종목 참가자 ${r.group.n.toLocaleString()}명 중 어디쯤인지(백분위, 50 = 평균). 아래는 각 점수의 근거가 된 실제 운동 수치입니다.</div>
+     <div class="mute" style="margin:6px 0">점수 = 실제 경기 기록(와 WOD)으로 추정한 내 구간 시간이 같은 성별·종목 참가자 ${r.group.n.toLocaleString()}명 중 어디쯤인지(백분위, 50 = 평균).${AG?` <b>${AG.label}</b> 열은 같은 성별·종목·연령대 참가자 ${AG.n.toLocaleString()}명끼리의 백분위입니다(연령대 결정: ${AG.source}).`:(r.sources.age_group_req?" 선택한 연령대는 표본이 적어 연령대 백분위를 계산하지 않았습니다.":"")} 아래는 각 점수의 근거가 된 실제 운동 수치입니다.</div>
      ${r.ratings.map(x=>`<div style="margin:6px 0"><b>${x.label} ${x.value}</b><div class="mute">${x.basis}</div><div class="mute" style="font-size:12px">${x.how}</div></div>`).join("")}
    </details></div>
    <div class="notes mute"><div>같은 성별·종목 참가자 ${r.group.n.toLocaleString()}명 대비 백분위(1~99). 스태미나·그립 능력치는 레이스 중 체력·그립 소모율에 반영됩니다.</div>

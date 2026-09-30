@@ -64,6 +64,33 @@ def test_lift_anchors_drive_z_and_tier():
     assert "중급" in used[0] and "엘리트" in used2[0]
 
 
+def test_general_run_grade_by_vdot():
+    g = scout.general_run_grade
+    assert [g(v) for v in (65, 60, 55, 52, 48, 45, 42, 40, 37, 35, 32, 30, 20)] == list("SSAABBCCDDEEF")
+    _, rep = scout.build(None, None, {"gender": "M", "race_type": "open", "weight_kg": 80}, {"run5k": 1200})   # 5K 20:00 ≈ VDOT 49.8
+    run = next(r for r in rep["ratings"] if r["key"] == "run")
+    assert run["general"]["grade"] in "AB" and run["general"]["vdot"] > 40 and "일반 러너 기준" in run["basis"]
+    assert all("general" not in r for r in rep["ratings"] if r["key"] != "run")
+
+
+def test_age_group_percentiles():
+    bio = {"gender": "M", "race_type": "open", "age_group": "45-49", "weight_kg": 80}
+    _, rep = scout.build(None, None, bio, {"run5k": 1320})
+    assert rep["age_group"]["label"] == "45-49" and rep["age_group"]["source"] == "선택" and rep["age_group"]["n"] >= 100
+    assert all(1 <= r["age_value"] <= 99 and r["age_grade"] in "SABCDEF" for r in rep["ratings"])
+    # 45-49세는 같은 연령대끼리 비교하면 전체 비교보다 점수가 높다 (나이에 따른 기록 저하)
+    assert next(r for r in rep["ratings"] if r["key"] == "overall")["age_value"] > next(r for r in rep["ratings"] if r["key"] == "overall")["value"]
+    _, by_age = scout.build(None, None, {"gender": "M", "race_type": "open", "age": 22}, {})
+    assert by_age["age_group"]["label"] == "16-24" and by_age["age_group"]["source"] == "나이"     # 21~24세도 연령대에 잡힌다
+    _, none = scout.build(None, None, {"gender": "F", "race_type": "pro", "age_group": "60-64"}, {})
+    assert none["age_group"] is None and all("age_value" not in r for r in none["ratings"])           # 표본 부족 → 계산 안 함
+
+
+def test_race_athlete_gets_age_group_from_record():
+    _, rep = scout.build("Kim, Hyunchul", "KOR")
+    assert rep["age_group"]["source"] == "경기 기록" and rep["age_group"]["label"][:2].isdigit()
+
+
 def test_ratings_include_basis_text():
     _, rep = scout.build(None, None, {"gender": "M", "race_type": "open", "weight_kg": 80}, {"run5k": 1500, "row2k": 420})
     by = {r["key"]: r for r in rep["ratings"]}

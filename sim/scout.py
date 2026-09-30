@@ -26,11 +26,13 @@ from .profile import AthleteProfile, build_profile
 from .segments import ALL
 from .store import grade_of
 
-POP_VERSION = 1
+POP_VERSION = 2
 IDX = {n: i for i, n in enumerate(ALL)}
 RUNS = [f"run{i}" for i in range(1, 9)]
 MIN_GROUP = 150
-MIN_BAND = 30
+MIN_BAND = 30          # 나이대 오프셋 추정에 필요한 최소 인원
+MIN_BAND_Q = 100       # 연령대별 백분위표에 필요한 최소 인원 (미만이면 연령대 백분위를 내지 않는다)
+BAND_RE = re.compile(r"(\d\d)-(\d\d)")
 
 ATTRS = {   # 키 → 표시 이름
     "run": "러닝 파워", "engine": "유산소 엔진", "power": "전신 파워", "grip": "그립·근지구력",
@@ -59,9 +61,15 @@ def raw_metrics(v: np.ndarray) -> dict[str, float]:
 
 # ---- 모집단 -----------------------------------------------------------------
 
-def _band_mid(cat: str | None) -> float | None:
-    m = re.fullmatch(r"(\d\d)-(\d\d)", cat or "")
-    return (int(m[1]) + int(m[2])) / 2 if m else None
+def band_label(cat: str | None) -> str | None:
+    """카테고리가 5세 단위 연령대('30-34')면 그대로, 아니면 None. (16-29 같은 넓은 묶음·U40·Open 등은 제외)"""
+    m = BAND_RE.fullmatch(cat or "")
+    return cat if m and int(m[2]) - int(m[1]) == 4 or cat == "16-24" else None
+
+
+def band_mid(label: str) -> float:
+    a, b = label.split("-")
+    return (int(a) + int(b)) / 2
 
 
 def _build_population() -> dict:
@@ -76,7 +84,7 @@ def _build_population() -> dict:
     groups = defaultdict(list)
     for (_, rt, g), rs in persons.items():
         rs.sort(key=lambda x: x[0])
-        groups[(g, rt)].append((np.mean([v for _, v, _ in rs], axis=0), _band_mid(rs[-1][2])))
+        groups[(g, rt)].append((np.mean([v for _, v, _ in rs], axis=0), band_label(rs[-1][2])))
     pop = {"version": POP_VERSION, "groups": {}, "age": {}}
     age_acc = defaultdict(lambda: defaultdict(list))
     for (g, rt), rows in groups.items():
@@ -85,13 +93,21 @@ def _build_population() -> dict:
         V = np.array([v for v, _ in rows])
         mu = V.mean(0)
         metrics = [raw_metrics(v) for v in V]
+        grid = np.linspace(0, 100, 101)
+        by_band = defaultdict(list)
+        for m, (_, band) in zip(metrics, rows):
+            if band:
+                by_band[band].append(m)
         pop["groups"][f"{g}|{rt}"] = {
             "n": len(rows), "mean": mu.tolist(), "cov": np.cov(V.T).tolist(),
-            "q": {k: np.percentile([m[k] for m in metrics], np.linspace(0, 100, 101)).tolist() for k in metrics[0]},
+            "q": {k: np.percentile([m[k] for m in metrics], grid).tolist() for k in metrics[0]},
+            # 연령대별 분위표: 같은 성별·종목·연령대 참가자끼리의 백분위
+            "bands": {b: {"n": len(ms), "q": {k: np.percentile([m[k] for m in ms], grid).tolist() for k in ms[0]}}
+                      for b, ms in sorted(by_band.items()) if len(ms) >= MIN_BAND_Q},
         }
-        for v, mid in rows:
-            if mid is not None:
-                age_acc[g][mid].append(v - mu)
+        for v, band in rows:
+            if band:
+                age_acc[g][band_mid(band)].append(v - mu)
     for g, bands in age_acc.items():
         pop["age"][g] = {str(mid): np.mean(vs, axis=0).tolist() for mid, vs in sorted(bands.items()) if len(vs) >= MIN_BAND}
     return pop
@@ -178,6 +194,15 @@ def vdot_tier(v: float) -> str:   # Daniels 분류처럼 VDOT 5 단위
     return "입문" if v < 30 else "초급" if v < 40 else "중급" if v < 50 else "상급" if v < 60 else "엘리트"
 
 
+# 일반 러너 기준 등급(참가자 백분위와 별개). VDOT은 성별과 무관한 러닝 수준 지표라 성별 구분 없이 쓴다.
+# 경계는 Daniels의 VDOT 5 단위 수준 구분을 참고한 설계값: 5K 기준 S 17:02 · A 19:16 · B 21:48 · C 24:06 · D 26:58 · E 30:40 이내.
+GENERAL_RUN_GRADES = [(60, "S"), (52, "A"), (45, "B"), (40, "C"), (35, "D"), (30, "E"), (0, "F")]
+
+
+def general_run_grade(v: float) -> str:
+    return next(g for lo, g in GENERAL_RUN_GRADES if v >= lo)
+
+
 def rower_watts(t2k: float) -> float:
     """Concept2 공식: 2000m 기록 → 평균 출력(W)."""
     return 2.80 / (t2k / 2000.0) ** 3
@@ -242,7 +267,8 @@ def explain(base: dict[str, float], rating: dict[str, int], weight_kg: float | N
     wkg = f" · {w / weight_kg:.1f}W/kg" if weight_kg else ""
     hold = float(np.mean([base[r] for r in RUNS[4:]]) / np.mean([base[r] for r in RUNS[:4]]) - 1)
     return {
-        "run": {"basis": f"Run 1~8 평균 {mmss(runs)}/km → 5K 환산 {mmss(t5k)} · VDOT {vd:.0f} ({vdot_tier(vd)} 러너 수준)",
+        "run": {"basis": f"Run 1~8 평균 {mmss(runs)}/km → 5K 환산 {mmss(t5k)} · VDOT {vd:.0f} · 일반 러너 기준 {general_run_grade(vd)}등급 — 점수·등급은 HYROX 참가자 기준, 일반 러너 등급은 VDOT 기준",
+                "general": {"grade": general_run_grade(vd), "vdot": round(vd, 1), "five_k": round(t5k)},
                 "how": "러닝 구간 8개의 평균 속도를 5K 기록으로 환산(HYROX 러닝이 단독 5K보다 8% 느리다고 가정)해 Daniels VDOT로 표시. 점수는 참가자 백분위."},
         "engine": {"basis": f"SkiErg {mmss(base['ski_erg'])} · 로잉 {mmss(base['rowing'])} → 2K 로우 환산 {mmss(t2k)} ({w:.0f}W{wkg}) · 1K 스키 환산 {mmss(base['ski_erg'] / SKI_FACTOR)}",
                    "how": "SkiErg·로잉 구간 평균을 Concept2 출력 공식(W=2.80/pace³)으로 환산. 점수는 참가자 백분위."},
@@ -251,16 +277,32 @@ def explain(base: dict[str, float], rating: dict[str, int], weight_kg: float | N
         "grip": {"basis": f"Farmers {mmss(base['farmers'])} · Sandbag {mmss(base['sandbag'])} · Wall Balls {mmss(base['wall_balls'])}",
                  "how": "파머스·샌드백 런지·월볼 평균 시간의 참가자 백분위."},
         "burpee": {"basis": f"Burpee Broad Jump {mmss(base['burpee'])}", "how": "버피 브로드점프 시간의 참가자 백분위."},
-        "stamina": {"basis": f"러닝 {vdot_tier(vd)} · 엔진 · 후반 감속 Run5~8이 Run1~4보다 {hold * 100:+.1f}%",
+        "stamina": {"basis": f"러닝(일반 러너 {general_run_grade(vd)}등급) · 엔진 · 후반 감속 Run5~8이 Run1~4보다 {hold * 100:+.1f}%",
                     "how": "러닝 수준(40%) + 엔진(40%) + 후반 유지력(가중 1.5×감속률)을 합친 원점수의 참가자 백분위. 레이스 중 체력 소모율에 반영."},
         "transition": {"basis": f"Roxzone(전환) {mmss(base['roxzone'])}", "how": "구간 사이 전환 시간의 참가자 백분위."},
         "overall": {"basis": f"기준 기록 {int(sum(base.values()) // 60)}분", "how": "총 기록의 참가자 백분위."},
     }
 
 
-def ratings(pop_g: dict, v: np.ndarray) -> dict[str, int]:
+def resolve_band(g: dict, age_group: str | None, age: float | None, race_cat: str | None) -> tuple[str | None, str | None]:
+    """연령대 결정 → (연령대, 출처). 선택한 값 > 입력한 나이 > 선수의 최근 경기 카테고리 순."""
+    bands = g.get("bands", {})
+    if age_group:
+        return (age_group, "선택") if age_group in bands else (None, None)
+    if age is not None:
+        hit = next((b for b in bands if int(b[:2]) <= age < int(b[3:]) + 1), None)
+        if hit:
+            return hit, "나이"
+    if race_cat and race_cat in bands:
+        return race_cat, "경기 기록"
+    return None, None
+
+
+def ratings(pop_g: dict, v: np.ndarray, band: str | None = None) -> dict[str, int]:
+    """band가 있으면 그 연령대 참가자끼리의 백분위, 없으면 성별·종목 전체 참가자 대비 백분위."""
+    table = pop_g["bands"][band]["q"] if band else pop_g["q"]
     raw, grid = raw_metrics(v), np.linspace(0, 100, 101)
-    return {k: int(round(np.clip(np.interp(raw[k], pop_g["q"][k], grid), 1, 99))) for k in raw}
+    return {k: int(round(np.clip(np.interp(raw[k], table[k], grid), 1, 99))) for k in raw}
 
 
 # ---- 진입점 -----------------------------------------------------------------
@@ -284,6 +326,10 @@ def build(name: str | None, nationality: str | None, bio: dict | None = None, wo
     bio, wod = bio or {}, {k: v for k, v in (wod or {}).items() if v is not None}
     pop, model = population(), get_model()
     race = build_profile(name, nationality) if name else None
+    race_cat = None
+    if race:      # 선수의 가장 최근 경기 카테고리(연령대)
+        last = sorted(data.load_singles(name, nationality), key=lambda r: r["race"])
+        race_cat = band_label(last[-1]["cat"]) if last else None
     gender = race.gender if race else bio.get("gender")
     rt = race.race_type if race else bio.get("race_type", "open")
     if gender not in ("M", "F"):
@@ -295,6 +341,8 @@ def build(name: str | None, nationality: str | None, bio: dict | None = None, wo
     cv = sim_cv(model.seg_cv)
 
     age = bio.get("age")
+    if age is None and bio.get("age_group"):
+        age = band_mid(bio["age_group"])         # 연령대만 고르면 그 연령대 중간 나이로 나이 효과를 반영
     age_off = np.zeros(len(ALL))
     if race:
         m0 = np.log([race.base[s] for s in ALL])
@@ -320,15 +368,21 @@ def build(name: str | None, nationality: str | None, bio: dict | None = None, wo
     # 경기 기록만 있을 때는 var = cv²/n ≤ cv² 이므로 build_profile의 sqrt(1+1/n)과 동일하다.
     cv_eff = np.sqrt(cv**2 + np.minimum(np.diag(P), cv**2))
     rating = ratings(g, m)
+    band, band_src = resolve_band(g, bio.get("age_group"), bio.get("age"), race_cat)
+    rating_age = ratings(g, m, band) if band else None
     traits = {"stamina": rating["stamina"], "grip": rating["grip"]}
     prof = AthleteProfile(name_, nat, gender, rt, season, n_races, base,
                           {s: float(v) for s, v in zip(ALL, cv_eff)}, float(day_sd), adjusted,
                           day_load={c: [float(x) for x in l] for c, l in zip(ALL, model.loads)}, traits=traits)
     exp = explain(base, rating, bio.get("weight_kg"))
     rep = {
-        "ratings": [{"key": k, "label": ATTRS.get(k, "종합"), "value": rating[k], "grade": grade_of(rating[k]), **exp[k]} for k in [*ATTRS, "overall"]],
+        "ratings": [{"key": k, "label": ATTRS.get(k, "종합"), "value": rating[k], "grade": grade_of(rating[k]),
+                     **({"age_value": rating_age[k], "age_grade": grade_of(rating_age[k])} if rating_age else {}), **exp[k]} for k in [*ATTRS, "overall"]],
         "group": {"gender": gender, "race_type": rt, "n": g["n"]},
-        "sources": {"races": n_races, "wod": used, "skipped": skipped, "age": None if race else age},
+        "age_group": {"label": band, "n": g["bands"][band]["n"], "source": band_src} if band else None,
+        "age_groups_available": list(g.get("bands", {})),
+        "sources": {"races": n_races, "wod": used, "skipped": skipped, "age": None if race else age,
+                    "age_group_req": bio.get("age_group")},
         "traits": traits, "reserve": plan_reserve(traits),
         "age_effect_pct": None if race or age is None else
             float(np.exp(mu + age_off).sum() / np.exp(mu).sum() * 100 - 100),

@@ -18,7 +18,7 @@ app.mount("/static", StaticFiles(directory=FRONT), name="static")
 
 FIELD_LABEL = {"run5k": "5K 러닝", "row2k": "2K 로우", "ski1k": "1K 스키에르그", "deadlift": "데드리프트 1RM", "backsquat": "백스쿼트 1RM",
                "pullups": "스트릭트 풀업", "dead_hang": "데드행", "fran": "Fran", "cindy": "Cindy", "wallball_2min": "2분 월볼",
-               "age": "나이", "weight_kg": "체중", "gender": "성별", "race_type": "종목", "label": "선수 이름", "memo": "메모",
+               "age": "나이", "age_group": "연령대", "weight_kg": "체중", "gender": "성별", "race_type": "종목", "label": "선수 이름", "memo": "메모",
                "temperature": "온도", "humidity": "습도", "condition": "컨디션", "stamina": "시작 스태미나", "grip": "시작 그립"}
 TIME_FIELDS = {"run5k", "row2k", "ski1k", "fran"}
 
@@ -65,6 +65,7 @@ class BioModel(BaseModel):
     gender: str | None = Field(None, pattern="^[MF]$")
     race_type: str = Field("open", pattern="^(open|pro)$")
     age: float | None = Field(None, ge=14, le=80)
+    age_group: str | None = Field(None, pattern=r"^\d\d-\d\d$")     # 연령대(예 "30-34"). 없으면 나이·경기 기록에서 자동
     weight_kg: float | None = Field(None, ge=35, le=180)
     name: str | None = None
 
@@ -154,8 +155,10 @@ class PatchRequest(BaseModel):
 def _snapshot(name: str, nationality: str, bio: dict, wod: dict) -> dict:
     """현재 모델로 계산한 능력치 요약 (등록 시점·재계산 시점의 값)."""
     p, rep = _scout(SimRequest(name=name, nationality=nationality, bio=bio, wod=wod))
-    ratings = {r["key"]: {"value": r["value"], "grade": r["grade"], "label": r["label"]} for r in rep["ratings"]}
-    return {"overall": ratings["overall"]["value"], "grade": ratings["overall"]["grade"],
+    ratings = {r["key"]: {"value": r["value"], "grade": r["grade"], "label": r["label"],
+                          **({"age_value": r["age_value"], "age_grade": r["age_grade"]} if "age_value" in r else {})}
+               for r in rep["ratings"]}
+    return {"overall": ratings["overall"]["value"], "grade": ratings["overall"]["grade"], "age_group": rep["age_group"],
             "expected_total": p.expected_total, "gender": p.gender, "race_type": p.race_type, "ratings": ratings}
 
 
