@@ -50,6 +50,35 @@ def test_scored_wod_direction_and_weight_required():
     assert skipped
 
 
+def test_external_formulas():
+    assert abs(scout.vdot(19 * 60 + 57) - 50) < 0.5                # Daniels: VDOT 50 ≈ 5K 19:57
+    assert abs(scout.rower_watts(420) - 300.0) < 3                  # Concept2: 2K 7:00 ≈ 300W
+
+
+def test_lift_anchors_drive_z_and_tier():
+    n = len(ALL)
+    mu, cov = np.zeros(n), 0.01 * np.eye(n)
+    inter, used, _ = scout.observations({"deadlift": 160}, "M", 80, mu, cov)    # 2.0×체중 = 중급(50%) → z≈0
+    elite, used2, _ = scout.observations({"deadlift": 260}, "M", 80, mu, cov)   # 3.25× = 엘리트(95%)
+    assert abs(inter[0][1]) < 1e-9 and elite[0][1] < 0
+    assert "중급" in used[0] and "엘리트" in used2[0]
+
+
+def test_ratings_include_basis_text():
+    _, rep = scout.build(None, None, {"gender": "M", "race_type": "open", "weight_kg": 80}, {"run5k": 1500, "row2k": 420})
+    by = {r["key"]: r for r in rep["ratings"]}
+    assert "VDOT" in by["run"]["basis"] and "W/kg" in by["engine"]["basis"] and by["run"]["how"]
+
+
+def test_run1_cv_capped_only_in_sim():
+    from sim.model import get_model
+    raw = np.array(get_model().seg_cv)
+    capped = scout.sim_cv(raw)
+    i = scout.IDX["run1"]
+    assert capped[i] < raw[i] and capped[i] <= scout.RUN1_CV_CAP * np.median([raw[scout.IDX[f"run{k}"]] for k in range(2, 8)]) + 1e-12
+    assert np.allclose(np.delete(capped, i), np.delete(raw, i))
+
+
 def test_wod_only_noise_not_wider_than_one_race_athlete():
     from sim.model import get_model
     prof, _ = scout.build(None, None, {"gender": "M", "race_type": "open"}, {"run5k": 1500})

@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from sim import data, montecarlo, scout
+from sim import data, montecarlo, scout, store
 from sim.engine import PACE, STATION, Conditions, Strategy, simulate
 
 import numpy as np
@@ -97,6 +97,41 @@ def scout_report(req: SimRequest):
     """능력치 리포트 + 합쳐진 프로필(기준 기록). 선수 선택 여부와 WOD 입력 여부에 상관없이 호출 가능."""
     p, rep = _scout(req)
     return {**rep, "profile": {**p.__dict__, "expected_total": p.expected_total}}
+
+
+class SaveRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=40)
+    id: str | None = None      # 있으면 그 프로필을 덮어쓴다
+    name: str = ""
+    nationality: str = ""
+    bio: BioModel = BioModel()
+    wod: WodModel = WodModel()
+
+
+@app.get("/api/profiles")
+def profiles_list():
+    return store.list_all()
+
+
+@app.post("/api/profiles")
+def profiles_save(req: SaveRequest):
+    """입력(선수·신체·WOD)과 저장 시점의 능력치 요약을 함께 저장한다."""
+    sim_req = SimRequest(name=req.name, nationality=req.nationality, bio=req.bio, wod=req.wod)
+    p, rep = _scout(sim_req)
+    ratings = {r["key"]: {"value": r["value"], "grade": r["grade"], "label": r["label"]} for r in rep["ratings"]}
+    return store.save({
+        "label": req.label.strip(), "name": req.name, "nationality": req.nationality,
+        "bio": req.bio.model_dump(exclude_none=True), "wod": req.wod.model_dump(exclude_none=True),
+        "snapshot": {"overall": ratings["overall"]["value"], "grade": ratings["overall"]["grade"],
+                     "expected_total": p.expected_total, "gender": p.gender, "race_type": p.race_type, "ratings": ratings},
+    }, req.id)
+
+
+@app.delete("/api/profiles/{profile_id}")
+def profiles_delete(profile_id: str):
+    if not store.delete(profile_id):
+        raise HTTPException(404, "저장된 프로필이 없습니다")
+    return {"ok": True}
 
 
 @app.post("/api/simulate")

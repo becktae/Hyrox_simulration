@@ -25,9 +25,11 @@ button:disabled{opacity:.45;cursor:default}
 .conds{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px 18px;margin-top:14px}
 .cond label{display:flex;justify-content:space-between;font-size:14px}.cond input[type=range]{width:100%;padding:0;border:0;background:none}.cond small{color:var(--mute)}
 .chalk{display:flex;gap:8px;align-items:center;margin-top:10px}
+.gb{display:inline-block;min-width:24px;text-align:center;border-radius:6px;padding:0 6px;font-weight:700;color:#fff;font-size:13px;line-height:20px}
+.sv{display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}.sv .gb{font-size:18px;min-width:34px;line-height:32px;border-radius:8px}.sv>div{flex:1;min-width:0}.sv button{padding:5px 10px}
 summary{cursor:pointer}.cond input:not([type=range]),.cond select{width:100%}
 .scout{display:grid;grid-template-columns:minmax(220px,1fr) minmax(220px,1fr);gap:14px;margin-top:14px;align-items:center}@media(max-width:600px){.scout{grid-template-columns:1fr}}
-.scout:empty{display:none}.attr{display:grid;grid-template-columns:110px 1fr 34px 40px;gap:8px;align-items:center;font-size:14px;padding:2px 0}
+.scout:empty{display:none}.attr{display:grid;grid-template-columns:110px 1fr 70px 40px;gap:8px;align-items:center;font-size:14px;padding:2px 0}
 .attr .bar{height:8px}.attr b{text-align:right}.attr small{color:var(--mute);text-align:right}.notes{grid-column:1/-1;font-size:13px}.notes div{margin-top:3px}.gauge small{color:var(--mute)}
 .bar{height:12px;background:var(--line);border-radius:6px;overflow:hidden}.bar i{display:block;height:100%;width:100%;transition:width .4s}
 .seg{font-size:26px;font-weight:700;margin:2px 0}.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:12px;color:#fff}
@@ -56,8 +58,11 @@ table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,t
         <button id="startMe">선수 없이 내 프로필로 시작</button></div>
       <div class="mute" id="wodMsg" style="margin-top:6px"></div>
     </details></div>
+  <div class="card hide" id="cSaved"><b>저장된 프로필</b><div id="savedList"></div></div>
   <div class="card hide" id="cProfile"><div id="who"></div>
     <div class="scout" id="scout"></div>
+    <div class="row hide" id="saveRow" style="margin-top:12px;align-items:center"><input id="saveLabel" placeholder="프로필 이름 (예: 2026 봄 시즌)" maxlength="40">
+      <button id="save">저장</button><button id="saveOver" class="hide">덮어쓰기</button><span class="mute" id="saveMsg"></span></div>
     <div class="conds" id="conds"></div><div class="env mute" id="envSum"></div>
     <div style="margin-top:12px"><button id="start" class="pri">레이스 시작</button></div></div>
 </section>
@@ -126,15 +131,47 @@ function base(){const bio={race_type:$("b_race_type").value},wod={};
   ["age","weight_kg"].forEach(k=>{const v=num("b_"+k);if(v!=null&&!isNaN(v))bio[k]=v});
   WOD.forEach(([k])=>{const v=num("w_"+k);if(v!=null&&!isNaN(v))wod[k]=v});
   return {name:ath&&!ath.custom?ath.name:"",nationality:ath&&!ath.custom?ath.nationality:"",bio,wod}}
+// ---- 등급 S A B C D E F ----
+const GCOL={S:"#d99a00",A:"#12915f",B:"#2f7bea",C:"#6b7c99",D:"#d9803a",E:"#d9583a",F:"#c0392b"};
+const gb=g=>`<span class="gb" style="background:${GCOL[g]}">${g}</span>`;
+const gradeTop=t=>t<=5?"S":t<=15?"A":t<=30?"B":t<=50?"C":t<=70?"D":t<=90?"E":"F";   // 상위 % 기준 (레이스 결과)
+// 능력치 점수(백분위)는 서버가 같은 표로 등급을 준다: 95↑ S · 85↑ A · 70↑ B · 50↑ C · 30↑ D · 10↑ E · 그 미만 F
+
+// ---- 저장된 프로필 ----
+let curId=null;
+const fmtIn=(t,v)=>t==="t"?`${Math.floor(v/60)}:${String(Math.round(v%60)).padStart(2,"0")}`:String(v);
+async function loadSaved(){let items=[];try{items=await api("/api/profiles")}catch(e){}
+  $("cSaved").classList.toggle("hide",!items.length);
+  $("savedList").innerHTML=items.map(p=>`<div class="sv" data-id="${p.id}">${gb(p.snapshot.grade)}<div><b>${p.label.replace(/</g,"&lt;")}</b><div class="mute">${p.name?p.name+" 기록 기반":"가상 선수"} · ${p.snapshot.gender==="M"?"남":"여"} ${p.snapshot.race_type} · 기준 ${fmt(p.snapshot.expected_total)} · 종합 ${p.snapshot.overall}</div></div>
+    <button class="ld">불러오기</button><button class="dl">삭제</button></div>`).join("");
+  document.querySelectorAll("#savedList .sv").forEach((el,i)=>{const p=items[i];
+    el.querySelector(".ld").onclick=()=>applySaved(p);
+    el.querySelector(".dl").onclick=async()=>{if(!confirm(`'${p.label}' 프로필을 삭제할까요?`))return;await fetch("/api/profiles/"+p.id,{method:"DELETE"});if(curId===p.id)curId=null;loadSaved()}})}
+async function applySaved(p){$("b_gender").value=p.bio.gender||"";$("b_race_type").value=p.bio.race_type||"open";
+  $("b_age").value=p.bio.age??"";$("b_weight_kg").value=p.bio.weight_kg??"";
+  WOD.forEach(([k,,t])=>$("w_"+k).value=p.wod[k]!=null?fmtIn(t,p.wod[k]):"");
+  if(p.wod&&Object.keys(p.wod).length)$("dWod").open=true;
+  ath=p.name?{name:p.name,nationality:p.nationality}:{custom:true};curId=p.id;$("saveLabel").value=p.label;await analyze()}
+async function doSave(overwrite){const label=$("saveLabel").value.trim();if(!label){$("saveMsg").textContent="이름을 입력하세요";return}
+  try{const b=base();const r=await api("/api/profiles",{label,id:overwrite?curId:null,name:b.name,nationality:b.nationality,bio:b.bio,wod:b.wod});
+    curId=r.id;$("saveMsg").textContent="저장했습니다 ✓";$("saveOver").classList.remove("hide");loadSaved()}
+  catch(e){$("saveMsg").textContent=typeof e.message==="string"?e.message:"저장 실패"}}
+$("save").onclick=()=>doSave(false);$("saveOver").onclick=()=>doSave(true);
 let radar;
 async function analyze(){$("wodMsg").textContent="";$("cProfile").classList.remove("hide");$("who").textContent="능력치 분석 중…";$("start").disabled=true;$("scout").innerHTML="";
   let r;try{r=await api("/api/scout",base())}catch(e){$("who").innerHTML=`<span class="err">${typeof e.message==="string"?e.message:"입력값을 확인하세요"}</span>`;return}
   prof=r.profile;const runs=[1,2,3,4,5,6,7,8].map(i=>prof.base["run"+i]).reduce((x,y)=>x+y)/8;
   $("who").innerHTML=`<b style="font-size:18px">${prof.name}</b> <span class="mute">${prof.nationality?`(${prof.nationality}) · `:"가상 선수 · "}${prof.gender==="M"?"남":"여"} ${prof.race_type}</span>
    <div class="kpis" style="margin-top:10px"><div class="kpi"><span class="mute">기준 기록</span><b>${fmt(prof.expected_total)}</b></div>
-   <div class="kpi"><span class="mute">평균 러닝</span><b>${fms(runs)}</b></div><div class="kpi"><span class="mute">반영 경기</span><b>${prof.n_races}</b></div><div class="kpi"><span class="mute">종합 능력치</span><b>${r.ratings.find(x=>x.key==="overall").value}</b></div></div>`;
+   <div class="kpi"><span class="mute">평균 러닝</span><b>${fms(runs)}</b></div><div class="kpi"><span class="mute">반영 경기</span><b>${prof.n_races}</b></div><div class="kpi"><span class="mute">종합 능력치</span><b>${r.ratings.find(x=>x.key==="overall").value} ${gb(r.ratings.find(x=>x.key==="overall").grade)}</b></div></div>`;
+  $("saveRow").classList.remove("hide");$("saveOver").classList.toggle("hide",!curId);
+  if(!$("saveLabel").value)$("saveLabel").value=ath&&!ath.custom?prof.name:"내 프로필";
   const rs=r.ratings.filter(x=>x.key!=="overall"),ro=r.race_only_ratings,S=r.sources;
-  $("scout").innerHTML=`<canvas id="cRadar" height="230"></canvas><div>${rs.map(x=>{const d=ro?x.value-ro[x.key]:0;return `<div class="attr"><span>${x.label}</span><div class="bar"><i style="width:${x.value}%;background:${x.value>=70?"var(--good)":x.value>=40?"var(--a)":"var(--bad)"}"></i></div><b>${x.value}</b><small>${ro&&d?(d>0?"+":"")+d:""}</small></div>`}).join("")}</div>
+  $("scout").innerHTML=`<canvas id="cRadar" height="230"></canvas><div>${rs.map(x=>{const d=ro?x.value-ro[x.key]:0;return `<div class="attr"><span>${x.label}</span><div class="bar"><i style="width:${x.value}%;background:${x.value>=70?"var(--good)":x.value>=40?"var(--a)":"var(--bad)"}"></i></div><b>${x.value} ${gb(x.grade)}</b><small>${ro&&d?(d>0?"+":"")+d:""}</small></div>`}).join("")}</div>
+   <div class="notes"><details open><summary><b>능력치는 이렇게 계산됩니다</b></summary>
+     <div class="mute" style="margin:6px 0">점수 = 실제 경기 기록(와 WOD)으로 추정한 내 구간 시간이 같은 성별·종목 참가자 ${r.group.n.toLocaleString()}명 중 어디쯤인지(백분위, 50 = 평균). 아래는 각 점수의 근거가 된 실제 운동 수치입니다.</div>
+     ${r.ratings.map(x=>`<div style="margin:6px 0"><b>${x.label} ${x.value}</b><div class="mute">${x.basis}</div><div class="mute" style="font-size:12px">${x.how}</div></div>`).join("")}
+   </details></div>
    <div class="notes mute"><div>같은 성별·종목 참가자 ${r.group.n.toLocaleString()}명 대비 백분위(1~99). 스태미나·그립 능력치는 레이스 중 체력·그립 소모율에 반영됩니다.</div>
    <div>계획 페이스 완주 시 예상 잔량 — 스태미나 ${Math.round(r.reserve.stamina*100)}% · 그립 ${Math.round(r.reserve.grip*100)}%</div>
    ${r.race_only_total?`<div>경기 기록만 기준 ${fmt(r.race_only_total)} → WOD 반영 ${fmt(prof.expected_total)} (${r.wod_shift_pct>=0?"+":""}${r.wod_shift_pct.toFixed(1)}%)</div>`:""}
@@ -146,6 +183,7 @@ async function analyze(){$("wodMsg").textContent="";$("cProfile").classList.remo
   if(radar)radar.destroy();
   radar=new Chart($("cRadar"),{type:"radar",data:{labels:rs.map(x=>x.label),datasets:[{data:rs.map(x=>x.value),backgroundColor:"#5b9dff44",borderColor:"#5b9dff",pointBackgroundColor:"#5b9dff"}].concat(ro?[{data:rs.map(x=>ro[x.key]),borderColor:"#8f9bb0",borderDash:[4,4],pointRadius:0,backgroundColor:"transparent"}]:[])},
     options:{plugins:{legend:{display:false}},scales:{r:{min:0,max:100,ticks:{display:false,stepSize:25},pointLabels:{font:{size:11}}}}}})}
+loadSaved();
 $("analyze").onclick=()=>{if(!ath&&!$("b_gender").value){$("wodMsg").textContent="선수를 고르거나 성별을 선택하세요.";$("wodMsg").className="err";return}
   if(!ath)ath={custom:true};analyze()};
 $("startMe").onclick=async()=>{if(!$("b_gender").value){$("wodMsg").textContent="성별을 선택하세요.";$("wodMsg").className="err";return}
@@ -216,9 +254,9 @@ async function finish(){show("sResult");const total=elapsed;
   const m=await api("/api/montecarlo",{...base(),n:1000,seed:1,conditions:cond});
   const e=m.hist.edges,c=m.hist.counts,N=c.reduce((a,b)=>a+b);let below=0;
   c.forEach((n,i)=>{if(total>=e[i+1])below+=n;else if(total>e[i])below+=n*(total-e[i])/(e[i+1]-e[i])});
-  const pct=100-below/N*100;   // 상위 %
-  const g=pct<=10?"S":pct<=30?"A":pct<=60?"B":pct<=85?"C":"D";
-  $("grade").textContent=g;$("grade").style.color=g<="A"?"var(--good)":g==="B"?"var(--a)":"var(--bad)";
+  const pct=below/N*100;   // 상위 % = 나보다 빠른 가상 레이스의 비율 (below = 내 기록보다 짧은 횟수)
+  const g=gradeTop(pct);
+  $("grade").textContent=g;$("grade").style.color=GCOL[g];
   const paced=[...Object.values(runPace),...Object.values(stnPace)];
   $("kpis").innerHTML=[["상위",pct.toFixed(0)+"%","가상 레이스 대비"],["P10 / P50 / P90",`${fmt(m.p10)} / ${fmt(m.p50)} / ${fmt(m.p90)}`],["선택","공격 "+paced.filter(x=>x==="aggressive"||x==="push").length+" · 보수 "+paced.filter(x=>x==="conservative"||x==="safe").length+" · 초크 "+chalkSet.size]]
    .map(([l,v,s])=>`<div class="kpi"><span class="mute">${l}</span><b style="font-size:${v.length>14?15:22}px">${v}</b><span class="mute">${s||""}</span></div>`).join("");

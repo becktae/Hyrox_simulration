@@ -14,6 +14,7 @@ import json
 import re
 from collections import defaultdict
 from functools import lru_cache
+from statistics import NormalDist
 
 import numpy as np
 
@@ -23,6 +24,7 @@ from .engine import plan_reserve
 from .model import cond_of, get_model
 from .profile import AthleteProfile, build_profile
 from .segments import ALL
+from .store import grade_of
 
 POP_VERSION = 1
 IDX = {n: i for i, n in enumerate(ALL)}
@@ -145,6 +147,42 @@ SCORED = {
 }
 
 
+# 외부 기준(StrengthLevel/StrengthLog 등 일반 리프터 표준): 체중 대비 1RM 배수 → 리프터 백분위.
+# 입문 5% · 초급 25% · 중급 50% · 상급 75% · 엘리트 95%. 데드리프트·스쿼트는 이 표로 z를 만든다 (기존 임의 기준값 대체).
+LIFT_ANCHORS = {
+    "deadlift": {"M": [(1.0, 5), (1.5, 25), (2.0, 50), (2.5, 75), (3.25, 95)], "F": [(0.75, 5), (1.0, 25), (1.5, 50), (2.0, 75), (2.5, 95)]},
+    "backsquat": {"M": [(0.75, 5), (1.25, 25), (1.75, 50), (2.25, 75), (2.75, 95)], "F": [(0.5, 5), (0.75, 25), (1.25, 50), (1.75, 75), (2.25, 95)]},
+}
+
+
+def lift_tier(pct: float) -> str:
+    return "엘리트" if pct >= 95 else "상급" if pct >= 75 else "중급" if pct >= 50 else "초급" if pct >= 25 else "입문"
+
+
+# ---- 실제 운동 수치로 환산 (설명·표시용) ---------------------------------------
+RUN_FACTOR, ROW_FACTOR, SKI_FACTOR = 1.08, 1.06, 1.08   # HYROX 구간 / 단독 테스트 (TIMED와 같은 설계값)
+
+
+def mmss(s: float) -> str:
+    return f"{int(s // 60)}:{int(round(s % 60)):02d}" if round(s % 60) < 60 else f"{int(s // 60) + 1}:00"
+
+
+def vdot(t_sec: float, dist_m: float = 5000.0) -> float:
+    """Daniels–Gilbert 공식: 레이스 기록 → VDOT."""
+    t, v = t_sec / 60, dist_m / (t_sec / 60)
+    vo2 = -4.60 + 0.182258 * v + 0.000104 * v * v
+    return vo2 / (0.8 + 0.1894393 * np.exp(-0.012778 * t) + 0.2989558 * np.exp(-0.1932605 * t))
+
+
+def vdot_tier(v: float) -> str:   # Daniels 분류처럼 VDOT 5 단위
+    return "입문" if v < 30 else "초급" if v < 40 else "중급" if v < 50 else "상급" if v < 60 else "엘리트"
+
+
+def rower_watts(t2k: float) -> float:
+    """Concept2 공식: 2000m 기록 → 평균 출력(W)."""
+    return 2.80 / (t2k / 2000.0) ** 3
+
+
 def _vec(weights: dict[str, float]) -> np.ndarray:
     h = np.zeros(len(ALL))
     for n, w in weights.items():
@@ -164,17 +202,23 @@ def observations(wod: dict, gender: str, weight_kg: float | None, pop_mean: np.n
         val = wod.get(k)
         if val is None:
             continue
-        if k in ("deadlift", "backsquat"):
+        if k in LIFT_ANCHORS:
             if not weight_kg:
                 skipped.append(f"{label}: 체중 입력 필요")
                 continue
-            val = val / weight_kg
-        mu, sd = norms[gender]
-        z = float(np.clip((val - mu) / sd * (1 if higher else -1), -3, 3))
+            ratio = val / weight_kg
+            xs, ps = zip(*LIFT_ANCHORS[k][gender])
+            pct = float(np.interp(ratio, xs, ps, left=1, right=99))
+            z = float(np.clip(NormalDist().inv_cdf(min(max(pct, 1), 99) / 100), -3, 3))
+            note = f"{label} {ratio:.2f}×체중 → 리프터 상위 {100 - pct:.0f}% ({lift_tier(pct)})"
+        else:
+            mu, sd = norms[gender]
+            z = float(np.clip((val - mu) / sd * (1 if higher else -1), -3, 3))
+            note = f"{label} z={z:+.1f}"
         h = _vec(weights)
         sigma = float(np.sqrt(h @ pop_cov @ h))
         obs.append((h, float(h @ pop_mean - rho * sigma * z), sigma * float(np.sqrt(1 - rho**2))))
-        used.append(f"{label} z={z:+.1f}")
+        used.append(note)
     return obs, used, skipped
 
 
@@ -188,12 +232,51 @@ def kalman(m: np.ndarray, P: np.ndarray, obs) -> tuple[np.ndarray, np.ndarray]:
     return m + K @ (y - H @ m), P - K @ H @ P
 
 
+def explain(base: dict[str, float], rating: dict[str, int], weight_kg: float | None) -> dict[str, dict]:
+    """능력치별 '어떻게 계산됐는가': 사용한 구간, 실제 운동 수치 환산, 절대 기준 등급."""
+    runs = float(np.mean([base[r] for r in RUNS]))
+    t5k = 5 * runs / RUN_FACTOR
+    vd = float(vdot(t5k))
+    t2k = 2 * base["rowing"] / ROW_FACTOR
+    w = rower_watts(t2k)
+    wkg = f" · {w / weight_kg:.1f}W/kg" if weight_kg else ""
+    hold = float(np.mean([base[r] for r in RUNS[4:]]) / np.mean([base[r] for r in RUNS[:4]]) - 1)
+    return {
+        "run": {"basis": f"Run 1~8 평균 {mmss(runs)}/km → 5K 환산 {mmss(t5k)} · VDOT {vd:.0f} ({vdot_tier(vd)} 러너 수준)",
+                "how": "러닝 구간 8개의 평균 속도를 5K 기록으로 환산(HYROX 러닝이 단독 5K보다 8% 느리다고 가정)해 Daniels VDOT로 표시. 점수는 참가자 백분위."},
+        "engine": {"basis": f"SkiErg {mmss(base['ski_erg'])} · 로잉 {mmss(base['rowing'])} → 2K 로우 환산 {mmss(t2k)} ({w:.0f}W{wkg}) · 1K 스키 환산 {mmss(base['ski_erg'] / SKI_FACTOR)}",
+                   "how": "SkiErg·로잉 구간 평균을 Concept2 출력 공식(W=2.80/pace³)으로 환산. 점수는 참가자 백분위."},
+        "power": {"basis": f"Sled Push {mmss(base['sled_push'])} · Sled Pull {mmss(base['sled_pull'])}",
+                  "how": "슬레드 푸시·풀 평균 시간의 참가자 백분위. (하체·전신 힘과 기술이 함께 반영됨)"},
+        "grip": {"basis": f"Farmers {mmss(base['farmers'])} · Sandbag {mmss(base['sandbag'])} · Wall Balls {mmss(base['wall_balls'])}",
+                 "how": "파머스·샌드백 런지·월볼 평균 시간의 참가자 백분위."},
+        "burpee": {"basis": f"Burpee Broad Jump {mmss(base['burpee'])}", "how": "버피 브로드점프 시간의 참가자 백분위."},
+        "stamina": {"basis": f"러닝 {vdot_tier(vd)} · 엔진 · 후반 감속 Run5~8이 Run1~4보다 {hold * 100:+.1f}%",
+                    "how": "러닝 수준(40%) + 엔진(40%) + 후반 유지력(가중 1.5×감속률)을 합친 원점수의 참가자 백분위. 레이스 중 체력 소모율에 반영."},
+        "transition": {"basis": f"Roxzone(전환) {mmss(base['roxzone'])}", "how": "구간 사이 전환 시간의 참가자 백분위."},
+        "overall": {"basis": f"기준 기록 {int(sum(base.values()) // 60)}분", "how": "총 기록의 참가자 백분위."},
+    }
+
+
 def ratings(pop_g: dict, v: np.ndarray) -> dict[str, int]:
     raw, grid = raw_metrics(v), np.linspace(0, 100, 101)
     return {k: int(round(np.clip(np.interp(raw[k], pop_g["q"][k], grid), 1, 99))) for k in raw}
 
 
 # ---- 진입점 -----------------------------------------------------------------
+
+RUN1_CV_CAP = 1.25   # Run 1 변동을 나머지 러닝 중앙값의 몇 배까지 허용할지
+
+
+def sim_cv(seg_cv) -> np.ndarray:
+    """시뮬레이션용 구간 변동. Run 1은 출발 웨이브·혼잡 때문에 실제 데이터에서도 변동이 유독 크지만(다른 러닝의 2배),
+    선수가 고를 수 없는 요소라 전략 효과(±3%)를 가린다 → 다른 러닝 중앙값의 RUN1_CV_CAP배로 제한.
+    백테스트(scripts/backtest.py, build_profile)에는 적용하지 않는다."""
+    cv = np.array(seg_cv, float)
+    cap = RUN1_CV_CAP * float(np.median([cv[IDX[f"run{i}"]] for i in range(2, 8)]))
+    cv[IDX["run1"]] = min(cv[IDX["run1"]], cap)
+    return cv
+
 
 def build(name: str | None, nationality: str | None, bio: dict | None = None, wod: dict | None = None
           ) -> tuple[AthleteProfile, dict]:
@@ -209,7 +292,7 @@ def build(name: str | None, nationality: str | None, bio: dict | None = None, wo
     if g is None:
         raise ValueError(f"집단 데이터 부족: {gender}/{rt}")
     mu, cov = np.array(g["mean"]), np.array(g["cov"])
-    cv = np.array(model.seg_cv)
+    cv = sim_cv(model.seg_cv)
 
     age = bio.get("age")
     age_off = np.zeros(len(ALL))
@@ -240,8 +323,9 @@ def build(name: str | None, nationality: str | None, bio: dict | None = None, wo
     traits = {"stamina": rating["stamina"], "grip": rating["grip"]}
     prof = AthleteProfile(name_, nat, gender, rt, season, n_races, base,
                           {s: float(v) for s, v in zip(ALL, cv_eff)}, float(day_sd), adjusted, traits=traits)
+    exp = explain(base, rating, bio.get("weight_kg"))
     rep = {
-        "ratings": [{"key": k, "label": ATTRS.get(k, "종합"), "value": rating[k]} for k in [*ATTRS, "overall"]],
+        "ratings": [{"key": k, "label": ATTRS.get(k, "종합"), "value": rating[k], "grade": grade_of(rating[k]), **exp[k]} for k in [*ATTRS, "overall"]],
         "group": {"gender": gender, "race_type": rt, "n": g["n"]},
         "sources": {"races": n_races, "wod": used, "skipped": skipped, "age": None if race else age},
         "traits": traits, "reserve": plan_reserve(traits),
