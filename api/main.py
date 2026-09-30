@@ -1,7 +1,8 @@
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -13,6 +14,42 @@ import numpy as np
 app = FastAPI(title="Hyrox Simulation")
 FRONT = Path(__file__).resolve().parents[1] / "frontend"
 app.mount("/static", StaticFiles(directory=FRONT), name="static")
+
+
+FIELD_LABEL = {"run5k": "5K 러닝", "row2k": "2K 로우", "ski1k": "1K 스키에르그", "deadlift": "데드리프트 1RM", "backsquat": "백스쿼트 1RM",
+               "pullups": "스트릭트 풀업", "dead_hang": "데드행", "fran": "Fran", "cindy": "Cindy", "wallball_2min": "2분 월볼",
+               "age": "나이", "weight_kg": "체중", "gender": "성별", "race_type": "종목", "label": "선수 이름", "memo": "메모",
+               "temperature": "온도", "humidity": "습도", "condition": "컨디션", "stamina": "시작 스태미나", "grip": "시작 그립"}
+TIME_FIELDS = {"run5k", "row2k", "ski1k", "fran"}
+
+
+def _show(field: str, v) -> str:
+    if field in TIME_FIELDS and isinstance(v, (int, float)):
+        return f"{int(v // 60)}:{int(round(v % 60)):02d}"
+    return f"{v:g}" if isinstance(v, (int, float)) else str(v)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_, exc: RequestValidationError):
+    """422를 '어느 항목이 왜 틀렸는지' 한 줄 한국어 문장으로 돌려준다 (화면에 그대로 표시)."""
+    msgs = []
+    for e in exc.errors():
+        f, ctx, t = str(e["loc"][-1]), e.get("ctx", {}), e["type"]
+        if t == "greater_than_equal":
+            why = f"{_show(f, ctx['ge'])} 이상이어야 합니다"
+        elif t == "less_than_equal":
+            why = f"{_show(f, ctx['le'])} 이하여야 합니다"
+        elif t in ("float_parsing", "float_type", "int_parsing"):
+            why = "숫자로 입력하세요"
+        elif t == "string_pattern_mismatch":
+            why = "올바른 값을 선택하세요"
+        elif t in ("string_too_short", "string_too_long"):
+            why = "길이를 확인하세요"
+        else:
+            why = e["msg"]
+        got = e.get("input")
+        msgs.append(f"{FIELD_LABEL.get(f, f)}: {why}" + (f" (입력값 {_show(f, got)})" if isinstance(got, (int, float)) else ""))
+    return JSONResponse({"detail": " / ".join(msgs)}, status_code=422)
 
 
 class CondModel(BaseModel):
@@ -159,11 +196,38 @@ def profiles_refresh():
     return {"refreshed": len(out)}
 
 
+@app.get("/api/profiles/trash")
+def profiles_trash():
+    return store.list_deleted()
+
+
 @app.delete("/api/profiles/{profile_id}")
 def profiles_delete(profile_id: str):
+    """삭제 = 휴지통으로 이동. 기록은 지워지지 않고 복구할 수 있다."""
     if not store.delete(profile_id):
         raise HTTPException(404, "등록된 선수가 없습니다")
-    return {"ok": True}
+    return {"ok": True, "trash": True}
+
+
+@app.post("/api/profiles/{profile_id}/restore")
+def profiles_restore(profile_id: str):
+    rec = store.restore(profile_id)
+    if rec is None:
+        raise HTTPException(404, "휴지통에 그 선수가 없습니다")
+    return rec
+
+
+class RevertRequest(BaseModel):
+    index: int
+
+
+@app.post("/api/profiles/{profile_id}/revert")
+def profiles_revert(profile_id: str, req: RevertRequest):
+    """이전 버전(history[index])으로 되돌린다. 되돌리기 직전 상태도 history에 남는다."""
+    rec = store.revert(profile_id, req.index)
+    if rec is None:
+        raise HTTPException(404, "되돌릴 버전이 없습니다")
+    return rec
 
 
 @app.post("/api/simulate")

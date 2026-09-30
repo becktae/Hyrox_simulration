@@ -137,8 +137,13 @@ def simulate(profile: AthleteProfile, strategy: Strategy, rng: np.random.Generat
     s_mult, g_mult = _drains(profile.traits)
     plan_traj = _plan_trajectory(s_mult, g_mult)
     state = (cond.stamina / 100, cond.grip / 100, 0.0)
-    day_z = rng.standard_normal()
-    load = profile.day_load
+    load = profile.day_load     # 구간 → 컨디션 요인 적재량(요인 수만큼). 없으면 모든 구간 요인 1개·적재 1
+    first = next(iter(load.values()), 1.0)
+    z = rng.standard_normal(len(first) if hasattr(first, "__len__") else 1)
+
+    def day(seg: str) -> float:
+        l = load.get(seg, 1.0)
+        return float(np.exp(profile.day_sd * (np.dot(l, z) if hasattr(l, "__len__") else l * z[0])))
     splits, total = {}, 0.0
     trace = []   # 구간 종료 시점의 (스태미나, 그립, 땀) — 게임 UI 게이지용
     for i, seg in enumerate(NAMES):
@@ -150,13 +155,13 @@ def simulate(profile: AthleteProfile, strategy: Strategy, rng: np.random.Generat
         plan_s, plan_g = plan_traj[i]
         fatigue = 1.0 + FATIGUE_GAIN * ((1 - stamina) ** 2 - plan_s**2)
         grip_pen = 1.0 + (GRIP_GAIN * ((1 - grip) ** 2 - plan_g**2) if seg in GRIP_SEGMENTS else 0.0)
-        t = (profile.base[seg] * t_mult * fatigue * grip_pen * cond.time_mult * np.exp(profile.day_sd * load.get(seg, 1.0) * day_z)
+        t = (profile.base[seg] * t_mult * fatigue * grip_pen * cond.time_mult * day(seg)
              * rng.lognormal(0.0, profile.cv[seg]) + (CHALK_SEC if chalk else 0.0))
         splits[seg] = t
         total += t
         trace.append({"stamina": stamina, "grip": grip, "sweat": sweat})
     # Roxzone/전환 시간: 페이스 전략과 무관하게 개인 기준 + 변동 (total_time = 16구간 합 + roxzone)
-    rox = (profile.base[OVERHEAD] * cond.time_mult * np.exp(profile.day_sd * load.get(OVERHEAD, 1.0) * day_z)
+    rox = (profile.base[OVERHEAD] * cond.time_mult * day(OVERHEAD)
            * rng.lognormal(0.0, profile.cv[OVERHEAD]))
     splits[OVERHEAD] = rox
     total += rox

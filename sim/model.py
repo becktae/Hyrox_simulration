@@ -19,7 +19,7 @@ from .config import CACHE_DIR
 from .segments import ALL
 
 N = len(ALL)
-MODEL_VERSION = 3   # 모델 구조가 바뀌면 올린다 → 오래된 캐시는 자동 재적합
+MODEL_VERSION = 4   # 모델 구조가 바뀌면 올린다 → 오래된 캐시는 자동 재적합
 K_MAX = 3   # 경험 단계: 1번째, 2번째, 3번째 이상
 Cond = tuple[str, str, str]  # (season, race_type, gender)
 
@@ -28,22 +28,47 @@ def cond_of(r: dict) -> Cond:
     return (r["season"], r["rt"], r["gender"])
 
 
-def one_factor(C: np.ndarray, var: np.ndarray, iters: int = 200) -> tuple[np.ndarray, np.ndarray]:
-    """잔차 공분산 C → 1요인 모형 C ≈ λλᵀ + diag(ψ) (주축 요인법).
+N_FACTORS = 2       # 그날 컨디션 요인 수 (잔차 구조: 러닝 계열 vs 스테이션 계열)
+PSI_FLOOR = 4e-4    # 구간 고유 변동 하한(sd 0.02): 어떤 구간도 '완전히 결정적'으로 눌리지 않게
 
-    λ[c] = 그날 컨디션이 구간 c에 미치는 정도, ψ[c] = 구간 고유 변동.
-    '모든 구간에 같은 컨디션 효과(λ=1)'를 가정하면 실제로 일정한 SkiErg·로잉(잔차 sd 4%)의 고유 변동이
-    0으로 눌리고(cv=0.001) 컨디션 영향이 큰 스테이션은 과소평가된다."""
+
+def varimax(L: np.ndarray, iters: int = 100) -> np.ndarray:
+    """요인 회전 — 적재량이 한 요인에 몰리게 해 요인을 해석하기 쉽게 한다(공분산 구조는 그대로)."""
+    n, k = L.shape
+    R = np.eye(k)
+    d = 0.0
+    for _ in range(iters):
+        Lr = L @ R
+        u, sv, vt = np.linalg.svd(L.T @ (Lr**3 - Lr @ np.diag((Lr**2).sum(0)) / n))
+        R = u @ vt
+        if sv.sum() < d * (1 + 1e-8):
+            break
+        d = sv.sum()
+    return L @ R
+
+
+def factor_model(C: np.ndarray, var: np.ndarray, k: int = N_FACTORS, iters: int = 300) -> tuple[np.ndarray, np.ndarray]:
+    """잔차 공분산 C → k요인 모형 C ≈ ΛΛᵀ + diag(ψ) (주축 요인법 + varimax).
+
+    Λ[c, j] = 그날 컨디션 요인 j가 구간 c에 미치는 정도(로그 단위), ψ[c] = 구간 고유 변동.
+    '모든 구간에 같은 컨디션 효과(λ=1, 요인 1개)'를 가정하면 실제로 일정한 SkiErg·로잉(잔차 sd 4%)의 고유 변동이
+    0으로 눌리고(cv=0.001) 컨디션 영향이 큰 스테이션은 과소평가된다. 요인 2개는 러닝 컨디션과 근력·스테이션 컨디션을 분리한다."""
     psi = 0.5 * var
     for _ in range(iters):
         w, V = np.linalg.eigh(C - np.diag(psi))
-        lam = V[:, -1] * np.sqrt(max(w[-1], 1e-12))
-        lam = lam * (1 if lam.sum() >= 0 else -1)
-        new = np.maximum(var - lam**2, 1e-5)
+        top = np.argsort(w)[::-1][:k]
+        L = V[:, top] * np.sqrt(np.maximum(w[top], 1e-12))
+        new = np.maximum(var - (L**2).sum(1), PSI_FLOOR)
         if np.allclose(new, psi, atol=1e-10):
             break
         psi = new
-    return np.maximum(lam, 1e-3), psi
+    comm = (L**2).sum(1)
+    over = comm > var - PSI_FLOOR                    # 고유 변동이 하한 아래로 내려가는 구간(Heywood)은 적재량을 줄인다
+    L[over] *= np.sqrt(np.maximum(var[over] - PSI_FLOOR, 1e-12) / comm[over])[:, None]
+    L = varimax(L)
+    L = L[:, np.argsort(-(L**2).sum(0))]              # 설명하는 변동이 큰 요인부터
+    L = L * np.where(L.sum(0) >= 0, 1.0, -1.0)
+    return L, np.maximum(var - (L**2).sum(1), PSI_FLOOR)
 
 
 @dataclass
@@ -53,7 +78,7 @@ class ConditionModel:
     seg_cv: np.ndarray   # 구간별 경기 간 고유 변동(로그 표준편차, 그날 컨디션 요인 제외)
     day_sd: float        # '그날 컨디션' 요인의 로그 표준편차 (구간 적재량 평균 기준 척도)
     seasons: list[str]
-    loads: np.ndarray | None = None   # 구간별 컨디션 요인 적재량(평균 1). 스키·로잉은 작고 파머스·월볼은 큼
+    loads: np.ndarray | None = None   # (N, N_FACTORS) 구간별 컨디션 요인 적재량 ÷ day_sd. 스키·로잉은 작고 스테이션은 큼
 
     @classmethod
     def fit(cls, rows: list[dict], iters: int = 20, min_rows: int = 30) -> "ConditionModel":
@@ -90,9 +115,9 @@ class ConditionModel:
             res.append((z - z.mean(0)) * np.sqrt(len(Y) / (len(Y) - 1)))
         R = np.vstack(res)
         var_s = R.var(0)
-        lam, psi = one_factor(np.cov(R.T, bias=True), var_s)
-        day_sd, loads = float(lam.mean()), lam / lam.mean()
-        seg_cv = np.sqrt(psi)
+        L, psi = factor_model(np.cov(R.T, bias=True), var_s)
+        day_sd = float(np.sqrt((L**2).sum(1).mean()))      # 구간 평균 컨디션 변동(로그 sd)
+        loads, seg_cv = L / day_sd, np.sqrt(psi)
         keep = {c: beta[i] for c, i in cid.items() if cnt[i] >= min_rows}
         seasons = sorted({c[0] for c in keep})
         return cls(keep, gamma, seg_cv, day_sd, seasons, loads)

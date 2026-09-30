@@ -20,7 +20,7 @@ class AthleteProfile:
     cv: dict[str, float]    # 성분별 경기 간 변동 (로그 sd, 추정 불확실성 반영)
     day_sd: float           # 그날 컨디션 (전 구간 공통)
     adjusted: bool          # 조건 보정을 적용했는지
-    day_load: dict[str, float] = field(default_factory=dict)   # 구간별 그날 컨디션 적재량(없으면 1)
+    day_load: dict[str, list[float]] = field(default_factory=dict)   # 구간별 그날 컨디션 요인 적재량(없으면 요인 1개·적재 1)
     traits: dict[str, float] = field(default_factory=dict)   # 능력치(0~100) 중 엔진에 쓰는 것: stamina, grip (없으면 50)
 
     @property
@@ -55,4 +55,4 @@ def build_profile(name: str, nationality: str, season: str | None = None, race_t
         name, nationality, last["gender"], rt, season, n,
         {s: float(np.exp(v)) for s, v in zip(ALL, y)},
         {s: float(v * infl) for s, v in zip(ALL, model.seg_cv)},
-        float(model.day_sd * infl), adjusted, day_load=dict(zip(ALL, model.loads)))
+        float(model.day_sd * infl), adjusted, day_load={c: [float(x) for x in l] for c, l in zip(ALL, model.loads)})

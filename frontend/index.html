@@ -74,7 +74,8 @@ table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}td,t
   <div class="card"><div class="row" style="align-items:center"><input id="rFilter" placeholder="이름·메모 검색">
     <select id="rSort"><option value="grade">등급순</option><option value="time">기준 기록 빠른순</option><option value="name">이름순</option><option value="recent">최근 등록순</option></select>
     <button id="rNew" class="pri">+ 새 선수 등록</button><button id="rRefresh" title="모델이 바뀐 뒤 능력치·기준 기록을 다시 계산">능력치 다시 계산</button></div>
-    <div class="mute" id="rMsg" style="margin-top:6px"></div><div id="rosterList" style="margin-top:8px"></div></div>
+    <div class="mute" id="rMsg" style="margin-top:6px"></div><div id="rosterList" style="margin-top:8px"></div>
+    <details id="trashBox" class="hide" style="margin-top:12px"><summary>🗑 휴지통 <span id="trashCount"></span> <span class="mute">— 삭제한 선수도 지워지지 않고 여기 보관됩니다</span></summary><div id="trashList"></div></details></div>
 </section>
 
 <section id="sRace" class="hide">
@@ -126,7 +127,8 @@ function condUI(){CONDS.forEach(([k,,,,,,lab])=>{cond[k]=+$("c_"+k).value;$("v_"
   const f=feels(),hot=Math.max(0,f-20);
   $("envSum").textContent=`체감온도 ${f.toFixed(0)}℃ · `+(hot>0?`더위로 시간 +${(hot*.6).toFixed(1)}%, 체력 소모 +${(hot*4).toFixed(0)}%, 땀 증가`:f<8?"추위로 몸이 굳어 시간 소폭 증가":"환경 영향 없음")}
 CONDS.forEach(c=>$("c_"+c[0]).oninput=condUI);condUI();
-const api=async(u,b,m="POST")=>{const r=await fetch(u,b?{method:m,headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}:{});const j=await r.json();if(!r.ok)throw new Error(j.detail||r.statusText);return j};
+const api=async(u,b,m="POST")=>{const r=await fetch(u,b?{method:m,headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}:{});const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(Array.isArray(j.detail)?j.detail.map(d=>d.msg).join(" / "):j.detail||`서버 오류(${r.status})`);return j};
 const show=id=>{["sSelect","sRace","sResult","sRoster"].forEach(s=>$(s).classList.toggle("hide",s!==id));
   $("tRoster").classList.toggle("on",id==="sRoster");$("tRace").classList.toggle("on",id!=="sRoster");if(id==="sRoster")loadRoster()};
 const simulate=()=>api("/api/simulate",{...base(),default_pace:"plan",run_pace:runPace,station_pace:stnPace,chalk:[...chalkSet],conditions:cond,seed});
@@ -136,11 +138,17 @@ const BIO=[["gender","성별(선수 없이 시작할 때)","sel",[["","선택"],
 const WOD=[["run5k","5K 러닝","t","25:00"],["row2k","2K 로우","t","7:30"],["ski1k","1K 스키에르그","t","4:00"],["deadlift","데드리프트 1RM(kg)","n","140"],["backsquat","백스쿼트 1RM(kg)","n","110"],["pullups","스트릭트 풀업(개)","n","8"],["dead_hang","데드행(초)","n","60"],["fran","Fran","t","5:00"],["cindy","Cindy(20분 라운드)","n","15"],["wallball_2min","2분 월볼(개)","n","50"]];
 const fld=(p,[k,n,t,x])=>`<div class="cond"><label><span>${n}</span></label>${t==="sel"?`<select id="${p}_${k}">${x.map(([v,l])=>`<option value="${v}">${l}</option>`).join("")}</select>`:`<input id="${p}_${k}" placeholder="${x}" inputmode="${t==="t"?"text":"decimal"}">`}</div>`;
 $("bioForm").innerHTML=BIO.map(f=>fld("b",f)).join("");$("wodForm").innerHTML=WOD.map(f=>fld("w",f)).join("");
-const num=id=>{const v=$(id).value.trim();if(!v)return null;if(v.includes(":")){const [m,s]=v.split(":");return +m*60+(+s||0)}return +v};
+// 시간 항목: "25:00"(분:초) 또는 90 이하 숫자는 분("25" = 25분, "7.5" = 7분30초), 그보다 큰 숫자는 초
+const num=(id,t)=>{const v=$(id).value.trim().replace(",",".");if(!v)return null;
+  if(v.includes(":")){const [m,x]=v.split(":");const r=+m*60+(+x||0);return isNaN(r)?NaN:r}
+  const r=+v;return t==="t"&&r>0&&r<=90?r*60:r};
+const badFields=()=>[...BIO.filter(f=>f[2]==="n").map(f=>["b",f]),...WOD.map(f=>["w",f])]
+  .filter(([p,[k,,t]])=>$(p+"_"+k).value.trim()&&isNaN(num(p+"_"+k,t)))
+  .map(([,[,n,t]])=>`${n}: ${t==="t"?"분:초(예 25:00)로":"숫자로"} 입력하세요`);
 function base(){const bio={race_type:$("b_race_type").value},wod={};
   if($("b_gender").value)bio.gender=$("b_gender").value;
   ["age","weight_kg"].forEach(k=>{const v=num("b_"+k);if(v!=null&&!isNaN(v))bio[k]=v});
-  WOD.forEach(([k])=>{const v=num("w_"+k);if(v!=null&&!isNaN(v))wod[k]=v});
+  WOD.forEach(([k,,t])=>{const v=num("w_"+k,t);if(v!=null&&!isNaN(v))wod[k]=v});
   return {name:ath&&!ath.custom?ath.name:"",nationality:ath&&!ath.custom?ath.nationality:"",bio,wod}}
 // ---- 등급 S A B C D E F ----
 const GCOL={S:"#d99a00",A:"#12915f",B:"#2f7bea",C:"#6b7c99",D:"#d9803a",E:"#d9583a",F:"#c0392b"};
@@ -153,8 +161,12 @@ let curId=null,roster=[];
 const esc=t=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmtIn=(t,v)=>t==="t"?`${Math.floor(v/60)}:${String(Math.round(v%60)).padStart(2,"0")}`:String(v);
 const GORD="SABCDEF";
-async function loadRoster(){try{roster=await api("/api/profiles")}catch(e){$("rMsg").textContent="목록을 불러오지 못했습니다";return}
-  $("rCount").textContent=roster.length?`(${roster.length})`:"";renderRoster()}
+let trash=[];
+async function loadRoster(){try{roster=await api("/api/profiles");trash=await api("/api/profiles/trash")}catch(e){$("rMsg").textContent="목록을 불러오지 못했습니다";return}
+  $("rCount").textContent=roster.length?`(${roster.length})`:"";renderRoster();renderTrash()}
+function renderTrash(){$("trashBox").classList.toggle("hide",!trash.length);$("trashCount").textContent=trash.length?`(${trash.length})`:"";
+  $("trashList").innerHTML=trash.map(p=>`<div class="sv" data-id="${p.id}">${gb(p.snapshot.grade)}<div><b>${esc(p.label)}</b> <span class="mute">${esc(p.deleted.slice(0,16).replace("T"," "))} 삭제 · 기준 ${fmt(p.snapshot.expected_total)}</span></div><button class="rs pri">복구</button></div>`).join("");
+  document.querySelectorAll("#trashList .sv").forEach(el=>el.querySelector(".rs").onclick=async()=>{try{await api(`/api/profiles/${el.dataset.id}/restore`,{});loadRoster()}catch(e){alert(e.message)}})}
 function renderRoster(){const q=$("rFilter").value.trim().toLowerCase(),so=$("rSort").value;
   const list=roster.filter(p=>!q||(p.label+" "+(p.memo||"")+" "+p.name).toLowerCase().includes(q));
   list.sort(so==="grade"?(a,b)=>b.snapshot.overall-a.snapshot.overall:so==="time"?(a,b)=>a.snapshot.expected_total-b.snapshot.expected_total:so==="name"?(a,b)=>a.label.localeCompare(b.label,"ko"):(a,b)=>b.created.localeCompare(a.created));
@@ -163,13 +175,17 @@ function renderRoster(){const q=$("rFilter").value.trim().toLowerCase(),so=$("rS
     return `<div class="sv" data-id="${p.id}">${gb(s.grade)}<div><b>${esc(p.label)}</b> <span class="mute">${p.name?esc(p.name)+" 기록 기반":"가상 선수"} · ${s.gender==="M"?"남":"여"} ${s.race_type} · 기준 ${fmt(s.expected_total)} · 종합 ${s.overall}</span>
       ${p.memo?`<div class="memo mute">${esc(p.memo)}</div>`:""}
       <div class="chips">${rs.map(([k,r])=>`<span>${r.label} ${gb(r.grade)}</span>`).join("")}</div></div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><button class="rc pri">레이스</button><button class="ed">편집</button><button class="nm">이름·메모</button><button class="dl">삭제</button></div></div>`}).join("");
+      <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><button class="rc pri">레이스</button><button class="ed">편집</button><button class="nm">이름·메모</button>${(p.history||[]).length?`<button class="hs">이전 버전 ${p.history.length}</button>`:""}<button class="dl">삭제</button></div></div>`}).join("");
   document.querySelectorAll("#rosterList .sv").forEach(el=>{const p=roster.find(x=>x.id===el.dataset.id);
     el.querySelector(".rc").onclick=async()=>{await applySaved(p);if(!$("start").disabled)startRace()};
     el.querySelector(".ed").onclick=()=>applySaved(p);
     el.querySelector(".nm").onclick=async()=>{const label=prompt("선수 이름",p.label);if(label===null)return;const memo=prompt("메모",p.memo||"");if(memo===null)return;
       try{await api("/api/profiles/"+p.id,{label:label.trim()||p.label,memo},"PATCH");loadRoster()}catch(e){alert("수정 실패")}};
-    el.querySelector(".dl").onclick=async()=>{if(!confirm(`'${p.label}' 선수를 삭제할까요?`))return;await fetch("/api/profiles/"+p.id,{method:"DELETE"});if(curId===p.id)curId=null;loadRoster()}})}
+    const hs=el.querySelector(".hs");if(hs)hs.onclick=async()=>{const h=p.history,n=h.length;
+      const txt=[...h].reverse().map((v,i)=>`${i+1}) ${v.saved.slice(0,16).replace("T"," ")} · ${v.label}${v.memo?" · "+v.memo:""} · 기준 ${fmt(v.snapshot.expected_total)}`).join("\n");
+      const k=parseInt(prompt(`되돌릴 버전 번호를 입력하세요 (현재 상태도 이전 버전으로 보관됩니다)\n\n${txt}`,"1"),10);if(!(k>=1&&k<=n))return;
+      try{await api(`/api/profiles/${p.id}/revert`,{index:n-k});loadRoster()}catch(e){alert(e.message)}};
+    el.querySelector(".dl").onclick=async()=>{if(!confirm(`'${p.label}' 선수를 휴지통으로 옮길까요?\n지워지지 않고 휴지통에서 복구할 수 있습니다.`))return;await fetch("/api/profiles/"+p.id,{method:"DELETE"});if(curId===p.id)curId=null;loadRoster()}})}
 $("rFilter").oninput=renderRoster;$("rSort").onchange=renderRoster;
 $("tRoster").onclick=()=>show("sRoster");$("tRace").onclick=()=>show("sSelect");
 $("rNew").onclick=()=>{ath=null;curId=null;prof=null;$("q").value="";$("list").innerHTML="";$("saveLabel").value="";$("saveMemo").value="";$("saveMsg").textContent="";
@@ -188,8 +204,12 @@ async function doSave(overwrite){const label=$("saveLabel").value.trim();if(!lab
   catch(e){$("saveMsg").textContent=typeof e.message==="string"?e.message:"저장 실패"}}
 $("save").onclick=()=>doSave(false);$("saveOver").onclick=()=>doSave(true);$("saveOver").textContent="선수 덮어쓰기";
 let radar;
-async function analyze(){$("wodMsg").textContent="";$("cProfile").classList.remove("hide");$("who").textContent="능력치 분석 중…";$("start").disabled=true;$("scout").innerHTML="";
-  let r;try{r=await api("/api/scout",base())}catch(e){$("who").innerHTML=`<span class="err">${typeof e.message==="string"?e.message:"입력값을 확인하세요"}</span>`;return}
+function inputError(msg){$("dWod").open=true;$("wodMsg").className="err";$("wodMsg").textContent=msg;$("who").innerHTML=`<span class="err">${esc(msg)}</span>`;
+  $("saveRow").classList.add("hide");$("start").disabled=true;$("wodMsg").scrollIntoView({block:"center",behavior:"smooth"})}
+async function analyze(){$("wodMsg").textContent="";$("cProfile").classList.remove("hide");$("start").disabled=true;$("scout").innerHTML="";
+  const bad=badFields();if(bad.length){inputError(bad.join(" / "));return}
+  $("who").textContent="능력치 분석 중…";
+  let r;try{r=await api("/api/scout",base())}catch(e){inputError(e.message||"입력값을 확인하세요");return}
   prof=r.profile;const runs=[1,2,3,4,5,6,7,8].map(i=>prof.base["run"+i]).reduce((x,y)=>x+y)/8;
   $("who").innerHTML=`<b style="font-size:18px">${prof.name}</b> <span class="mute">${prof.nationality?`(${prof.nationality}) · `:"가상 선수 · "}${prof.gender==="M"?"남":"여"} ${prof.race_type}</span>
    <div class="kpis" style="margin-top:10px"><div class="kpi"><span class="mute">기준 기록</span><b>${fmt(prof.expected_total)}</b></div>
