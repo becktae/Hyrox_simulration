@@ -1,10 +1,11 @@
 """조건 효과 모델.
 
-log x[사람, 조건, 성분] = alpha[사람, 성분] + beta[조건, 성분] + 잔차
+log x[사람, 조건, 성분] = alpha[사람, 성분] + beta[조건, 성분] + gamma[경험, 성분] + 잔차
   조건 = (시즌, 종목, 성별), 성분 = 16구간 + roxzone
 
 같은 사람이 여러 조건에서 뛴 기록으로 beta를 추정하므로, 시즌별 규칙/무게 변화와
-Pro↔Open 전환을 참가자 구성 변화와 분리해서 보정할 수 있다. 잔차로 경기 간 변동
+Pro↔Open 전환을 참가자 구성 변화와 분리해서 보정할 수 있다. 경험 항(gamma)은 N번째 경기(1, 2, 3+)에 따른
+학습 효과다. 잔차로 경기 간 변동
 (구간별 cv + 그날 컨디션 day_sd)을 데이터에서 추정한다.
 """
 import json
@@ -18,6 +19,8 @@ from .config import CACHE_DIR
 from .segments import ALL
 
 N = len(ALL)
+MODEL_VERSION = 2   # 모델 구조가 바뀌면 올린다 → 오래된 캐시는 자동 재적합
+K_MAX = 3   # 경험 단계: 1번째, 2번째, 3번째 이상
 Cond = tuple[str, str, str]  # (season, race_type, gender)
 
 
@@ -28,6 +31,7 @@ def cond_of(r: dict) -> Cond:
 @dataclass
 class ConditionModel:
     beta: dict[Cond, np.ndarray]
+    gamma: np.ndarray    # (K_MAX, N) 경험 효과, gamma[0]=0 기준
     seg_cv: np.ndarray   # 구간별 경기 간 변동(로그 표준편차, day 제외)
     day_sd: float        # 전 구간 공통 '그날 컨디션' 로그 표준편차
     seasons: list[str]
@@ -37,42 +41,54 @@ class ConditionModel:
         by_p = defaultdict(list)
         for r in rows:
             by_p[r["person"]].append(r)
-        people = [v for v in by_p.values() if len(v) >= 2]
+        people = [sorted(v, key=lambda r: r["race"]) for v in by_p.values() if len(v) >= 2]
         conds = sorted({cond_of(r) for v in people for r in v})
         cid = {c: i for i, c in enumerate(conds)}
-        P = [(np.log([r["x"] for r in v]), np.array([cid[cond_of(r)] for r in v])) for v in people]
+        P = [(np.log([r["x"] for r in v]), np.array([cid[cond_of(r)] for r in v]),
+              np.minimum(np.arange(len(v)), K_MAX - 1)) for v in people]
         cnt = np.zeros(len(conds))
-        for _, ci in P:
+        cnt_k = np.zeros(K_MAX)
+        for _, ci, ki in P:
             np.add.at(cnt, ci, 1)
+            np.add.at(cnt_k, ki, 1)
         beta = np.zeros((len(conds), N))
+        gamma = np.zeros((K_MAX, N))
         for _ in range(iters):
             num = np.zeros_like(beta)
-            for Y, ci in P:
-                np.add.at(num, ci, Y - (Y - beta[ci]).mean(0))
+            for Y, ci, ki in P:
+                np.add.at(num, ci, Y - gamma[ki] - (Y - beta[ci] - gamma[ki]).mean(0))
             new = num / np.maximum(cnt, 1)[:, None]
             beta = new - new[cnt.argmax()]
+            numg = np.zeros_like(gamma)
+            for Y, ci, ki in P:
+                np.add.at(numg, ki, Y - beta[ci] - (Y - beta[ci] - gamma[ki]).mean(0))
+            gamma = numg / np.maximum(cnt_k, 1)[:, None]
+            gamma = gamma - gamma[0]
         # 잔차 분산(자유도 보정) → 구간 cv, day_sd
         res = []
-        for Y, ci in P:
-            r = (Y - beta[ci]) - (Y - beta[ci]).mean(0)
-            res.append(r * np.sqrt(len(Y) / (len(Y) - 1)))
+        for Y, ci, ki in P:
+            z = Y - beta[ci] - gamma[ki]
+            res.append((z - z.mean(0)) * np.sqrt(len(Y) / (len(Y) - 1)))
         R = np.vstack(res)
         var_s = R.var(0)
         day_var = max(R.mean(1).var() - var_s.mean() / N, 1e-6)
         seg_cv = np.sqrt(np.maximum(var_s - day_var, 1e-6))
         keep = {c: beta[i] for c, i in cid.items() if cnt[i] >= min_rows}
         seasons = sorted({c[0] for c in keep})
-        return cls(keep, seg_cv, float(np.sqrt(day_var)), seasons)
+        return cls(keep, gamma, seg_cv, float(np.sqrt(day_var)), seasons)
 
     def to_json(self) -> str:
-        return json.dumps({"beta": {"|".join(k): v.tolist() for k, v in self.beta.items()},
+        return json.dumps({"version": MODEL_VERSION, "beta": {"|".join(k): v.tolist() for k, v in self.beta.items()},
+                           "gamma": self.gamma.tolist(),
                            "seg_cv": self.seg_cv.tolist(), "day_sd": self.day_sd, "seasons": self.seasons})
 
     @classmethod
     def from_json(cls, s: str) -> "ConditionModel":
         d = json.loads(s)
+        if d.get("version") != MODEL_VERSION:
+            raise ValueError("stale model cache")
         return cls({tuple(k.split("|")): np.array(v) for k, v in d["beta"].items()},
-                   np.array(d["seg_cv"]), d["day_sd"], d["seasons"])
+                   np.array(d["gamma"]), np.array(d["seg_cv"]), d["day_sd"], d["seasons"])
 
 
 _MODEL: ConditionModel | None = None
@@ -86,8 +102,11 @@ def get_model(refit: bool = False) -> ConditionModel:
     if not refit and _MODEL is not None:
         return _MODEL
     if not refit and path.exists() and path.stat().st_mtime >= DB_PATH.stat().st_mtime:
-        _MODEL = ConditionModel.from_json(path.read_text())
-        return _MODEL
+        try:
+            _MODEL = ConditionModel.from_json(path.read_text())
+            return _MODEL
+        except (ValueError, KeyError):
+            pass  # 구버전/손상 캐시 → 재적합
     _MODEL = ConditionModel.fit(data.load_singles())
     CACHE_DIR.mkdir(exist_ok=True)
     path.write_text(_MODEL.to_json())
